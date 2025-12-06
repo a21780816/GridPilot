@@ -44,7 +44,10 @@ config/*.key
 *.key
 
 # Keep example config
-!config/grid_config_example.py
+!config/config.example.ini
+
+# User data
+users/
 
 # Logs
 *.log

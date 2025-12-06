@@ -158,73 +158,36 @@ pip install config/esun_marketdata-2.0.0-cp37-abi3-macosx_11_0_arm64.whl
 
 ## 快速開始
 
-### 1. 設定券商 API
+### 1. 建立 Telegram Bot
 
-複製範例設定檔並填入您的 API 資訊：
+1. 在 Telegram 搜尋 [@BotFather](https://t.me/BotFather)
+2. 發送 `/newbot` 建立新的 Bot
+3. 記下取得的 Bot Token
 
-```bash
-cp config/config.example.ini config/config.ini
-```
-
-編輯 `config/config.ini`：
-
-```ini
-[esun]
-entry_point = https://api.esunbank.com.tw
-cert_path = ./config/your_cert.p12
-cert_password = your_password
-api_key = your_api_key
-api_secret = your_api_secret
-account = your_account
-```
-
-### 2. 設定網格參數
-
-複製並編輯網格設定檔：
+### 2. 設定環境變數
 
 ```bash
-cp config/grid_config_example.py config/grid_config.py
+export TELEGRAM_BOT_TOKEN="your_bot_token"
 ```
 
-```python
-# 交易參數
-STOCK_SYMBOL = "2330"    # 股票代號
-LOWER_PRICE = 900.0      # 網格下限
-UPPER_PRICE = 1000.0     # 網格上限
-GRID_NUM = 10            # 網格數量
-QUANTITY_PER_GRID = 1    # 每格交易量（張）
-CHECK_INTERVAL = 60      # 檢查間隔（秒）
-
-# Telegram 設定（可選）
-TELEGRAM_BOT_TOKEN = "your_bot_token"
-TELEGRAM_CHAT_ID = "your_chat_id"
-```
-
-### 3. 啟動網格機器人
-
-```bash
-python scripts/run_grid_bot.py
-```
-
-## 使用 Telegram 機器人
-
-### 設定 Telegram Bot
-
-1. 在 Telegram 搜尋 @BotFather 建立新的 Bot
-2. 取得 Bot Token
-3. 執行腳本取得您的 Chat ID：
-
-```bash
-python scripts/get_telegram_chat_id.py
-```
-
-### 啟動 Telegram Bot
+### 3. 啟動 Telegram Bot
 
 ```bash
 python scripts/run_telegram_bot.py
 ```
 
-### Telegram 指令
+### 4. 透過 Telegram 設定
+
+在 Telegram 中與你的 Bot 對話：
+
+1. `/start` - 開始使用
+2. `/broker` - 設定券商 API（輸入設定檔路徑）
+3. `/grid` - 新增網格策略（依提示輸入參數）
+4. `/run 2330` - 啟動交易
+
+所有設定都會自動儲存在 `users/{chat_id}/` 目錄下。
+
+## Telegram 指令
 
 | 指令 | 說明 |
 |------|------|
@@ -244,27 +207,30 @@ python scripts/run_telegram_bot.py
 
 ```
 GridPilot/
-├── config/                    # 配置文件
-│   ├── config.example.ini     # 券商 API 設定範例
-│   └── grid_config_example.py # 網格參數設定範例
+├── config/                       # 配置文件
+│   └── config.example.ini        # 券商 API 設定範例
 ├── src/
-│   ├── brokers/              # 券商介面
-│   │   ├── base.py           # 抽象基底類別
-│   │   └── esun.py           # 玉山證券實作
-│   ├── core/                 # 核心邏輯
+│   ├── brokers/                  # 券商介面
+│   │   ├── base.py               # 抽象基底類別
+│   │   └── esun.py               # 玉山證券實作
+│   ├── core/                     # 核心邏輯
 │   │   ├── grid_trading_bot.py   # 網格交易機器人
 │   │   ├── bot_manager.py        # 機器人管理器
 │   │   ├── user_manager.py       # 用戶管理
 │   │   └── calculate_capital.py  # 本金計算器
-│   └── telegram/             # Telegram 整合
+│   └── telegram/                 # Telegram 整合
 │       ├── telegram_bot.py       # Telegram Bot 主程式
 │       └── telegram_notifier.py  # 通知模組
-├── scripts/                  # 執行腳本
-│   ├── run_grid_bot.py       # 啟動網格機器人
-│   ├── run_telegram_bot.py   # 啟動 Telegram Bot
+├── scripts/                      # 執行腳本
+│   ├── run_telegram_bot.py       # 啟動 Telegram Bot
 │   └── get_telegram_chat_id.py   # 取得 Chat ID
-├── tests/                    # 測試程式
-└── docs/                     # 文件
+├── users/                        # 用戶資料（自動生成）
+│   └── {chat_id}/                # 各用戶獨立目錄
+│       ├── config.json           # 用戶基本設定
+│       ├── brokers/              # 券商設定
+│       └── grids/                # 網格策略設定
+├── tests/                        # 測試程式
+└── docs/                         # 文件
 ```
 
 ## 風險提醒
@@ -285,25 +251,25 @@ GridPilot/
 
 ## 策略範例
 
-### 保守型策略
+### 保守型策略（大型 ETF）
 
-```python
-STOCK_SYMBOL = "0050"   # 元大台灣50
-LOWER_PRICE = 130.0
-UPPER_PRICE = 150.0
-GRID_NUM = 10
-QUANTITY_PER_GRID = 1
-```
+| 參數 | 值 | 說明 |
+|------|-----|------|
+| 股票代號 | 0050 | 元大台灣50 |
+| 價格下限 | 130 | |
+| 價格上限 | 150 | |
+| 網格數量 | 10 | |
+| 每格張數 | 1 | |
 
-### 積極型策略
+### 積極型策略（個股）
 
-```python
-STOCK_SYMBOL = "2330"   # 台積電
-LOWER_PRICE = 900.0
-UPPER_PRICE = 1100.0
-GRID_NUM = 20
-QUANTITY_PER_GRID = 1
-```
+| 參數 | 值 | 說明 |
+|------|-----|------|
+| 股票代號 | 2330 | 台積電 |
+| 價格下限 | 900 | |
+| 價格上限 | 1100 | |
+| 網格數量 | 20 | 較密集的網格 |
+| 每格張數 | 1 | |
 
 ## 開發
 
