@@ -148,13 +148,17 @@ pip install -r requirements.txt
 
 ### 安裝玉山證券 SDK
 
+請向玉山證券申請 API 權限後，安裝對應的 SDK：
+
 ```bash
-# 安裝交易 SDK (根據您的系統選擇對應版本)
-pip install config/esun_trade-2.0.0-cp37-abi3-macosx_11_0_arm64.whl
+# 安裝交易 SDK
+pip install esun_trade-*.whl
 
 # 安裝市場數據 SDK
-pip install config/esun_marketdata-2.0.0-cp37-abi3-macosx_11_0_arm64.whl
+pip install esun_marketdata-*.whl
 ```
+
+> SDK 檔案需自行向玉山證券取得，不包含在此專案中。
 
 ## 快速開始
 

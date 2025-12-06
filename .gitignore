@@ -43,6 +43,9 @@ config/*.key
 *.pem
 *.key
 
+# SDK files (too large for git)
+*.whl
+
 # Keep example config
 !config/config.example.ini
 
