@@ -10,6 +10,102 @@
 - **即時通知** - 下單、成交、停損停利即時推送
 - **風險控制** - 支援最大持倉、最大本金、停損停利設定
 
+## 系統架構
+
+```mermaid
+flowchart TB
+    subgraph User["使用者介面"]
+        TG[Telegram App]
+        CLI[命令列]
+    end
+
+    subgraph TelegramLayer["Telegram 層"]
+        TB[TelegramBot<br/>指令處理]
+        TN[TelegramNotifier<br/>通知推送]
+    end
+
+    subgraph CoreLayer["核心層"]
+        BM[BotManager<br/>機器人管理]
+        UM[UserManager<br/>用戶管理]
+        GTB[GridTradingBot<br/>網格交易引擎]
+    end
+
+    subgraph BrokerLayer["券商層"]
+        BA[Broker Adapter<br/>抽象介面]
+        ESUN[玉山證券 SDK]
+    end
+
+    subgraph External["外部服務"]
+        TRADE[交易 API]
+        MARKET[行情 API]
+    end
+
+    subgraph Storage["資料儲存"]
+        CONFIG[設定檔]
+        USERS[用戶資料]
+    end
+
+    TG <--> TB
+    CLI --> GTB
+    TB <--> BM
+    TB <--> UM
+    BM <--> GTB
+    GTB --> TN
+    TN --> TG
+    UM <--> USERS
+    GTB <--> BA
+    BA <--> ESUN
+    ESUN <--> TRADE
+    ESUN <--> MARKET
+    GTB <--> CONFIG
+```
+
+### 架構說明
+
+| 層級 | 元件 | 說明 |
+|------|------|------|
+| **使用者介面** | Telegram / CLI | 用戶透過 Telegram 或命令列操作 |
+| **Telegram 層** | TelegramBot | 處理用戶指令、互動式設定流程 |
+| | TelegramNotifier | 推送交易通知、狀態報告 |
+| **核心層** | BotManager | 管理多個網格機器人的生命週期 |
+| | UserManager | 管理用戶設定、券商配置、網格策略 |
+| | GridTradingBot | 網格交易核心邏輯、價格監控、下單執行 |
+| **券商層** | Broker Adapter | 統一的券商介面抽象 |
+| | 玉山證券 SDK | 實際的交易與行情 API 實作 |
+
+### 交易流程
+
+```mermaid
+sequenceDiagram
+    participant U as 使用者
+    participant T as Telegram Bot
+    participant G as GridTradingBot
+    participant B as 券商 API
+
+    U->>T: /run 2330
+    T->>G: 啟動網格交易
+
+    loop 每 60 秒
+        G->>B: 查詢當前價格
+        B-->>G: 返回價格
+
+        alt 價格 <= 網格買點
+            G->>B: 送出買單
+            B-->>G: 委託成功
+            G->>T: 發送買入通知
+            T->>U: 推送通知
+        else 價格 >= 網格賣點
+            G->>B: 送出賣單
+            B-->>G: 委託成功
+            G->>T: 發送賣出通知
+            T->>U: 推送通知
+        end
+    end
+
+    U->>T: /stop 2330
+    T->>G: 停止網格交易
+```
+
 ## 網格交易原理
 
 網格交易是一種量化交易策略，在價格區間內設置多個買賣點位：
