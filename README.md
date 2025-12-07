@@ -6,6 +6,8 @@
 
 - **自動化網格交易** - 在設定的價格區間內自動執行買賣
 - **Telegram 機器人** - 透過 Telegram 設定、控制和監控交易
+- **檔案上傳設定** - 直接上傳 `.ini` 設定檔和 `.p12` 憑證，無需手動輸入路徑
+- **即時股價查詢** - 設定網格時自動顯示當前股價資訊
 - **多標的支援** - 可同時運行多個股票的網格策略
 - **即時通知** - 下單、成交、停損停利即時推送
 - **風險控制** - 支援最大持倉、最大本金、停損停利設定
@@ -139,26 +141,15 @@ sequenceDiagram
 git clone https://github.com/a21780816/GridPilot.git
 cd GridPilot
 
-# 使用 uv 安裝依賴
+# 使用 uv 建立虛擬環境並安裝依賴
 uv sync
 
-# 或使用 pip
-pip install -r requirements.txt
+# 安裝玉山證券 SDK（需自行向玉山證券取得）
+uv pip install esun_trade-*.whl
+uv pip install esun_marketdata-*.whl
 ```
 
-### 安裝玉山證券 SDK
-
-請向玉山證券申請 API 權限後，安裝對應的 SDK：
-
-```bash
-# 安裝交易 SDK
-pip install esun_trade-*.whl
-
-# 安裝市場數據 SDK
-pip install esun_marketdata-*.whl
-```
-
-> SDK 檔案需自行向玉山證券取得，不包含在此專案中。
+> SDK 檔案需自行向玉山證券申請 API 權限後取得，不包含在此專案中。
 
 ## 快速開始
 
@@ -168,16 +159,19 @@ pip install esun_marketdata-*.whl
 2. 發送 `/newbot` 建立新的 Bot
 3. 記下取得的 Bot Token
 
-### 2. 設定環境變數
+### 2. 設定 Telegram Bot Token
 
 ```bash
-export TELEGRAM_BOT_TOKEN="your_bot_token"
+# 複製設定檔範例
+cp config/telegram.example.ini config/telegram.ini
+
+# 編輯設定檔，填入你的 Bot Token
 ```
 
 ### 3. 啟動 Telegram Bot
 
 ```bash
-python scripts/run_telegram_bot.py
+uv run python scripts/run_telegram_bot.py
 ```
 
 ### 4. 透過 Telegram 設定
@@ -185,11 +179,29 @@ python scripts/run_telegram_bot.py
 在 Telegram 中與你的 Bot 對話：
 
 1. `/start` - 開始使用
-2. `/broker` - 設定券商 API（輸入設定檔路徑）
-3. `/grid` - 新增網格策略（依提示輸入參數）
+2. `/broker` - 設定券商 API
+   - 選擇券商後，上傳 `.ini` 設定檔
+   - 再上傳 `.p12` 憑證檔
+3. `/grid` - 新增網格策略
+   - 輸入股票代號後會自動顯示即時股價
+   - 依提示輸入價格區間和網格參數
 4. `/run 2330` - 啟動交易
 
 所有設定都會自動儲存在 `users/{chat_id}/` 目錄下。
+
+### 券商設定檔格式
+
+```ini
+[Esun]
+PersonId = A123456789
+Account = 1234567
+CertPath = cert.p12
+CertPassword = your_password
+Env = simulation
+BrokerId = 6460
+```
+
+> 設定檔中的 `CertPath` 會在上傳憑證後自動更新為正確路徑。
 
 ## Telegram 指令
 
@@ -197,21 +209,25 @@ python scripts/run_telegram_bot.py
 |------|------|
 | `/start` | 開始使用 |
 | `/help` | 顯示說明 |
-| `/broker` | 新增券商設定 |
+| `/broker` | 管理券商設定（新增/重新設定） |
 | `/brokers` | 查看已設定的券商 |
-| `/grid` | 新增網格策略 |
+| `/grid` | 新增網格策略（含即時股價顯示） |
 | `/grids` | 查看所有網格策略 |
+| `/edit [代號]` | 修改網格設定 |
+| `/delete [代號]` | 刪除網格設定 |
 | `/run [代號]` | 啟動指定標的 |
 | `/stop [代號]` | 停止指定標的 |
 | `/runall` | 啟動所有網格 |
 | `/stopall` | 停止所有網格 |
 | `/status` | 查看運行狀態 |
+| `/status [代號]` | 查看指定標的狀態 |
 
 ## 專案結構
 
 ```
 GridPilot/
 ├── config/                       # 配置文件
+│   ├── telegram.example.ini      # Telegram Bot 設定範例
 │   └── config.example.ini        # 券商 API 設定範例
 ├── src/
 │   ├── brokers/                  # 券商介面
@@ -221,6 +237,7 @@ GridPilot/
 │   │   ├── grid_trading_bot.py   # 網格交易機器人
 │   │   ├── bot_manager.py        # 機器人管理器
 │   │   ├── user_manager.py       # 用戶管理
+│   │   ├── stock_info.py         # 台股即時報價查詢
 │   │   └── calculate_capital.py  # 本金計算器
 │   └── telegram/                 # Telegram 整合
 │       ├── telegram_bot.py       # Telegram Bot 主程式
@@ -231,7 +248,8 @@ GridPilot/
 ├── users/                        # 用戶資料（自動生成）
 │   └── {chat_id}/                # 各用戶獨立目錄
 │       ├── config.json           # 用戶基本設定
-│       ├── brokers/              # 券商設定
+│       ├── brokers/              # 券商設定 (.ini)
+│       ├── credentials/          # 憑證檔案 (.p12)
 │       └── grids/                # 網格策略設定
 ├── tests/                        # 測試程式
 └── docs/                         # 文件

@@ -109,13 +109,41 @@ class TradingBot:
     # ========== 券商管理 ==========
 
     async def broker_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """處理 /broker 指令 - 新增券商設定"""
+        """處理 /broker 指令 - 管理券商設定"""
         chat_id = update.effective_chat.id
 
         # 清除之前的狀態
         self.state_manager.clear_state(chat_id)
 
-        # 顯示券商選擇
+        # 檢查是否已有設定過券商
+        existing_brokers = self.user_manager.get_all_broker_configs(chat_id)
+
+        if existing_brokers:
+            # 已有券商設定，顯示管理選單
+            msg = "<b>券商管理</b>\n\n<b>已設定的券商：</b>\n"
+            for b in existing_brokers:
+                broker_name = SUPPORTED_BROKERS.get(b['broker_name'], {}).get('name', b['broker_name'])
+                env = b.get('env', 'N/A')
+                env_display = '模擬' if env == 'simulation' else '正式' if env == 'production' else env
+                msg += f"• {broker_name} ({env_display})\n"
+
+            keyboard = [
+                [InlineKeyboardButton("新增券商", callback_data="broker_add_new")],
+                [InlineKeyboardButton("重新設定", callback_data="broker_reconfigure")],
+                [InlineKeyboardButton("取消", callback_data="cancel")]
+            ]
+
+            await update.message.reply_text(
+                msg,
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+        else:
+            # 沒有券商設定，直接進入新增流程
+            await self._show_broker_selection(update.message, chat_id)
+
+    async def _show_broker_selection(self, message, chat_id):
+        """顯示券商選擇清單"""
         brokers = get_broker_list()
         keyboard = []
         for broker_id, broker_name in brokers.items():
@@ -123,7 +151,7 @@ class TradingBot:
 
         keyboard.append([InlineKeyboardButton("取消", callback_data="cancel")])
 
-        await update.message.reply_text(
+        await message.reply_text(
             "<b>新增券商設定</b>\n\n請選擇您的券商：",
             parse_mode='HTML',
             reply_markup=InlineKeyboardMarkup(keyboard)
@@ -451,8 +479,60 @@ class TradingBot:
             await query.edit_message_text("已取消")
             return
 
+        # 新增券商
+        if data == "broker_add_new":
+            brokers = get_broker_list()
+            keyboard = []
+            for broker_id, broker_name in brokers.items():
+                keyboard.append([InlineKeyboardButton(broker_name, callback_data=f"broker_select_{broker_id}")])
+            keyboard.append([InlineKeyboardButton("取消", callback_data="cancel")])
+
+            await query.edit_message_text(
+                "<b>新增券商設定</b>\n\n請選擇您的券商：",
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            self.state_manager.set_state(chat_id, UserSetupState.WAITING_BROKER_SELECT)
+
+        # 重新設定券商（選擇要重設的券商）
+        elif data == "broker_reconfigure":
+            existing_brokers = self.user_manager.get_all_broker_configs(chat_id)
+            keyboard = []
+            for b in existing_brokers:
+                broker_id = b['broker_name']
+                broker_name = SUPPORTED_BROKERS.get(broker_id, {}).get('name', broker_id)
+                keyboard.append([InlineKeyboardButton(broker_name, callback_data=f"broker_reconfig_{broker_id}")])
+            keyboard.append([InlineKeyboardButton("取消", callback_data="cancel")])
+
+            await query.edit_message_text(
+                "<b>重新設定券商</b>\n\n請選擇要重新設定的券商：",
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+
+        # 重新設定特定券商
+        elif data.startswith("broker_reconfig_"):
+            broker_type = data.replace("broker_reconfig_", "")
+            self.state_manager.set_temp_data(chat_id, 'broker_type', broker_type)
+
+            broker_info = SUPPORTED_BROKERS.get(broker_type)
+            if broker_info:
+                await query.edit_message_text(
+                    f"重新設定: <b>{broker_info['name']}</b>\n\n"
+                    f"📄 請上傳設定檔 (.ini)\n\n"
+                    f"設定檔格式範例：\n"
+                    f"<code>[Esun]\n"
+                    f"PersonId = A123456789\n"
+                    f"Account = 1234567\n"
+                    f"CertPath = xxx.p12\n"
+                    f"CertPassword = 123456\n"
+                    f"Env = simulation</code>",
+                    parse_mode='HTML'
+                )
+                self.state_manager.set_state(chat_id, UserSetupState.WAITING_CONFIG_FILE)
+
         # 券商選擇
-        if data.startswith("broker_select_"):
+        elif data.startswith("broker_select_"):
             broker_type = data.replace("broker_select_", "")
             self.state_manager.set_temp_data(chat_id, 'broker_type', broker_type)
 
@@ -460,11 +540,17 @@ class TradingBot:
             if broker_info:
                 await query.edit_message_text(
                     f"已選擇: <b>{broker_info['name']}</b>\n\n"
-                    f"請輸入設定檔路徑：\n"
-                    f"例如: <code>./config/config.simulation.ini</code>",
+                    f"📄 請上傳設定檔 (.ini)\n\n"
+                    f"設定檔格式範例：\n"
+                    f"<code>[Esun]\n"
+                    f"PersonId = A123456789\n"
+                    f"Account = 1234567\n"
+                    f"CertPath = xxx.p12\n"
+                    f"CertPassword = 123456\n"
+                    f"Env = simulation</code>",
                     parse_mode='HTML'
                 )
-                self.state_manager.set_state(chat_id, UserSetupState.WAITING_API_KEY)
+                self.state_manager.set_state(chat_id, UserSetupState.WAITING_CONFIG_FILE)
 
         # 選擇網格使用的券商
         elif data.startswith("grid_broker_"):
@@ -512,23 +598,21 @@ class TradingBot:
             return
 
         # ===== 券商設定流程 =====
-        if state == UserSetupState.WAITING_API_KEY:
-            # 這裡接收設定檔路徑
-            temp = self.state_manager.get_temp_data(chat_id)
-            broker_type = temp.get('broker_type')
-
-            broker_config = {'config_file': text}
-            self.user_manager.save_broker_config(chat_id, broker_type, broker_config)
-            self.state_manager.clear_state(chat_id)
-
-            broker_name = SUPPORTED_BROKERS.get(broker_type, {}).get('name', broker_type)
+        if state == UserSetupState.WAITING_CONFIG_FILE:
+            # 提示使用者上傳檔案而不是輸入文字
             await update.message.reply_text(
-                f"<b>券商設定完成</b>\n\n"
-                f"券商: {broker_name}\n"
-                f"設定檔: {text}\n\n"
-                f"使用 /grid 設定網格策略",
-                parse_mode='HTML'
+                "請上傳 .ini 設定檔，而不是輸入文字\n\n"
+                "📎 點擊輸入框旁的迴紋針圖示來上傳檔案"
             )
+            return
+
+        elif state == UserSetupState.WAITING_CERT_FILE:
+            # 提示使用者上傳檔案而不是輸入文字
+            await update.message.reply_text(
+                "請上傳 .p12 憑證檔，而不是輸入文字\n\n"
+                "📎 點擊輸入框旁的迴紋針圖示來上傳檔案"
+            )
+            return
 
         # ===== 網格設定流程 =====
         elif state == UserSetupState.WAITING_GRID_SYMBOL:
@@ -546,13 +630,23 @@ class TradingBot:
 
             self.state_manager.set_temp_data(chat_id, 'symbol', symbol)
 
+            # 查詢股價資訊
+            from src.core.stock_info import get_stock_quote, format_price_info
+            quote = await get_stock_quote(symbol)
+
+            if quote:
+                price_info = format_price_info(quote)
+                price_msg = f"{price_info}\n\n"
+            else:
+                price_msg = f"<b>{symbol}</b>\n(無法取得即時報價)\n\n"
+
             # 選擇券商
             brokers = self.user_manager.get_broker_names(chat_id)
             if len(brokers) == 1:
                 # 只有一個券商，直接使用
                 self.state_manager.set_temp_data(chat_id, 'broker', brokers[0])
                 await update.message.reply_text(
-                    f"股票代號: <code>{symbol}</code>\n\n"
+                    f"{price_msg}"
                     "請輸入網格價格下限：",
                     parse_mode='HTML'
                 )
@@ -565,7 +659,7 @@ class TradingBot:
                     keyboard.append([InlineKeyboardButton(name, callback_data=f"grid_broker_{b}")])
 
                 await update.message.reply_text(
-                    f"股票代號: <code>{symbol}</code>\n\n"
+                    f"{price_msg}"
                     "請選擇要使用的券商：",
                     parse_mode='HTML',
                     reply_markup=InlineKeyboardMarkup(keyboard)
@@ -657,6 +751,125 @@ class TradingBot:
             except ValueError:
                 await update.message.reply_text("請輸入有效的整數")
 
+    # ========== 檔案上傳處理 ==========
+
+    async def handle_document(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """處理檔案上傳"""
+        chat_id = update.effective_chat.id
+        state = self.state_manager.get_state(chat_id)
+        document = update.message.document
+
+        if state == UserSetupState.IDLE:
+            await update.message.reply_text(
+                "請先使用 /broker 指令開始設定流程"
+            )
+            return
+
+        # 取得檔案資訊
+        file_name = document.file_name
+        file_size = document.file_size
+
+        # 檔案大小限制 (1MB)
+        if file_size > 1024 * 1024:
+            await update.message.reply_text("檔案太大，請上傳小於 1MB 的檔案")
+            return
+
+        # ===== 處理設定檔 (.ini) =====
+        if state == UserSetupState.WAITING_CONFIG_FILE:
+            if not file_name.endswith('.ini'):
+                await update.message.reply_text(
+                    "請上傳 .ini 格式的設定檔\n"
+                    "例如: config.simulation.ini"
+                )
+                return
+
+            try:
+                # 下載檔案
+                file = await context.bot.get_file(document.file_id)
+                file_bytes = await file.download_as_bytearray()
+                config_content = file_bytes.decode('utf-8')
+
+                # 暫存設定內容
+                self.state_manager.set_temp_data(chat_id, 'config_content', config_content)
+                self.state_manager.set_temp_data(chat_id, 'config_filename', file_name)
+
+                # 驗證設定檔格式
+                temp = self.state_manager.get_temp_data(chat_id)
+                broker_type = temp.get('broker_type')
+                self.user_manager.parse_broker_config_file(config_content, broker_type)
+
+                await update.message.reply_text(
+                    f"✅ 設定檔已接收: <code>{file_name}</code>\n\n"
+                    f"🔐 請上傳憑證檔 (.p12)",
+                    parse_mode='HTML'
+                )
+                self.state_manager.set_state(chat_id, UserSetupState.WAITING_CERT_FILE)
+
+            except UnicodeDecodeError:
+                await update.message.reply_text(
+                    "設定檔編碼錯誤，請確認是 UTF-8 編碼的文字檔"
+                )
+            except ValueError as e:
+                await update.message.reply_text(
+                    f"設定檔格式錯誤: {e}\n\n"
+                    f"請檢查設定檔內容後重新上傳"
+                )
+            except Exception as e:
+                logger.error(f"處理設定檔錯誤: {e}")
+                await update.message.reply_text(
+                    f"處理設定檔時發生錯誤，請稍後再試"
+                )
+
+        # ===== 處理憑證檔 (.p12) =====
+        elif state == UserSetupState.WAITING_CERT_FILE:
+            if not file_name.endswith('.p12'):
+                await update.message.reply_text(
+                    "請上傳 .p12 格式的憑證檔"
+                )
+                return
+
+            try:
+                # 下載憑證檔
+                file = await context.bot.get_file(document.file_id)
+                cert_bytes = bytes(await file.download_as_bytearray())
+
+                # 取得暫存資料
+                temp = self.state_manager.get_temp_data(chat_id)
+                broker_type = temp.get('broker_type')
+                config_content = temp.get('config_content')
+
+                # 儲存券商設定和憑證
+                saved_config = self.user_manager.save_broker_from_config_file(
+                    chat_id=chat_id,
+                    broker_name=broker_type,
+                    config_content=config_content,
+                    cert_content=cert_bytes,
+                    cert_filename=file_name
+                )
+
+                # 清除狀態
+                self.state_manager.clear_state(chat_id)
+
+                broker_name = SUPPORTED_BROKERS.get(broker_type, {}).get('name', broker_type)
+                env = saved_config.get('env', 'N/A')
+                env_display = '模擬環境' if env == 'simulation' else '正式環境' if env == 'production' else env
+
+                await update.message.reply_text(
+                    f"✅ <b>券商設定完成</b>\n\n"
+                    f"券商: {broker_name}\n"
+                    f"帳號: {saved_config.get('account', 'N/A')}\n"
+                    f"環境: {env_display}\n\n"
+                    f"使用 /grid 設定網格策略",
+                    parse_mode='HTML'
+                )
+
+            except Exception as e:
+                logger.error(f"處理憑證檔錯誤: {e}")
+                await update.message.reply_text(
+                    f"處理憑證檔時發生錯誤: {e}\n\n"
+                    f"請重新上傳或使用 /broker 重新開始"
+                )
+
     async def _save_grid_config(self, chat_id, query):
         """儲存網格設定"""
         temp = self.state_manager.get_temp_data(chat_id)
@@ -716,6 +929,12 @@ class TradingBot:
         self.app.add_handler(MessageHandler(
             filters.TEXT & ~filters.COMMAND,
             self.handle_message
+        ))
+
+        # 檔案上傳處理器
+        self.app.add_handler(MessageHandler(
+            filters.Document.ALL,
+            self.handle_document
         ))
 
         logger.info("Telegram Bot 啟動中...")

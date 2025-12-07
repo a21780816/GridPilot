@@ -6,7 +6,9 @@
 import os
 import json
 import logging
+from configparser import ConfigParser
 from datetime import datetime
+from io import StringIO
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -163,9 +165,11 @@ class UserManager:
         brokers = []
         brokers_dir = self._get_brokers_dir(chat_id)
         if brokers_dir.exists():
-            for broker_file in brokers_dir.glob('*.json'):
-                config = self._load_json(broker_file)
+            # 讀取 .ini 檔案
+            for broker_file in brokers_dir.glob('*.ini'):
+                config = self._load_ini_config(broker_file)
                 if config:
+                    config['broker_name'] = broker_file.stem  # esun.ini -> esun
                     brokers.append(config)
         return brokers
 
@@ -174,7 +178,7 @@ class UserManager:
         brokers_dir = self._get_brokers_dir(chat_id)
         if not brokers_dir.exists():
             return []
-        return [f.stem for f in brokers_dir.glob('*.json')]
+        return [f.stem for f in brokers_dir.glob('*.ini')]
 
     # ========== 網格設定操作 ==========
 
@@ -305,7 +309,178 @@ class UserManager:
         """取得用戶日誌目錄"""
         return self._get_logs_dir(chat_id)
 
+    # ========== 設定檔解析 ==========
+
+    def parse_broker_config_file(self, content: str, broker_name: str) -> Dict:
+        """
+        解析券商設定檔內容 (.ini 格式)
+
+        Args:
+            content: .ini 檔案內容 (字串)
+            broker_name: 券商名稱
+
+        Returns:
+            Dict: 解析後的設定
+        """
+        config = ConfigParser()
+        config.read_string(content)
+
+        result = {}
+
+        # 解析玉山證券設定
+        if broker_name == 'esun':
+            if config.has_section('Esun'):
+                section = 'Esun'
+            elif config.has_section('esun'):
+                section = 'esun'
+            else:
+                raise ValueError("設定檔缺少 [Esun] 區段")
+
+            # 必要欄位
+            required_fields = ['PersonId', 'Account', 'CertPath', 'CertPassword', 'Env']
+            for field in required_fields:
+                if not config.has_option(section, field):
+                    raise ValueError(f"設定檔缺少 {field} 欄位")
+
+            result = {
+                'person_id': config.get(section, 'PersonId'),
+                'account': config.get(section, 'Account'),
+                'cert_path': config.get(section, 'CertPath'),
+                'cert_password': config.get(section, 'CertPassword'),
+                'env': config.get(section, 'Env'),
+            }
+
+            # 可選欄位
+            if config.has_option(section, 'BrokerId'):
+                result['broker_id'] = config.get(section, 'BrokerId')
+            else:
+                result['broker_id'] = '6460'  # 玉山預設
+
+        else:
+            # 其他券商 - 一般性解析
+            for section in config.sections():
+                for key, value in config.items(section):
+                    result[key] = value
+
+        return result
+
+    def save_broker_from_config_file(
+        self,
+        chat_id,
+        broker_name: str,
+        config_content: str,
+        cert_content: bytes = None,
+        cert_filename: str = None
+    ) -> Dict:
+        """
+        從設定檔內容儲存券商設定
+
+        Args:
+            chat_id: Telegram Chat ID
+            broker_name: 券商名稱
+            config_content: .ini 設定檔內容
+            cert_content: 憑證檔案內容 (bytes)
+            cert_filename: 憑證檔案名稱
+
+        Returns:
+            Dict: 儲存的設定
+        """
+        # 解析設定檔以驗證格式
+        config = self.parse_broker_config_file(config_content, broker_name)
+
+        # 如果有憑證檔案，儲存憑證
+        if cert_content and cert_filename:
+            cert_path = self.save_credential_file(
+                chat_id, broker_name, cert_filename, cert_content
+            )
+            # 更新 config_content 中的 CertPath
+            config['cert_path'] = cert_path
+
+        # 儲存 .ini 檔案
+        self._save_broker_ini(chat_id, broker_name, config_content, config.get('cert_path'))
+
+        return config
+
+    def _save_broker_ini(self, chat_id, broker_name: str, config_content: str, cert_path: str = None):
+        """儲存券商 .ini 設定檔"""
+        brokers_dir = self._get_brokers_dir(chat_id)
+        brokers_dir.mkdir(parents=True, exist_ok=True)
+
+        ini_path = brokers_dir / f'{broker_name}.ini'
+
+        # 如果有新的憑證路徑，更新 config_content
+        if cert_path:
+            config = ConfigParser()
+            config.read_string(config_content)
+
+            # 找到正確的 section
+            section = None
+            for s in config.sections():
+                if s.lower() == broker_name.lower() or s.lower() == 'esun':
+                    section = s
+                    break
+
+            if section and config.has_option(section, 'CertPath'):
+                config.set(section, 'CertPath', cert_path)
+
+            # 寫入檔案
+            with open(ini_path, 'w', encoding='utf-8') as f:
+                config.write(f)
+        else:
+            # 直接儲存原始內容
+            with open(ini_path, 'w', encoding='utf-8') as f:
+                f.write(config_content)
+
+        logger.info(f"券商設定已儲存: {chat_id}/{broker_name}.ini")
+
     # ========== 工具方法 ==========
+
+    def _load_ini_config(self, path: Path) -> Optional[Dict]:
+        """讀取 .ini 設定檔"""
+        if not path.exists():
+            return None
+        try:
+            config = ConfigParser()
+            config.read(path, encoding='utf-8')
+
+            result = {}
+            broker_name = path.stem  # esun.ini -> esun
+
+            if broker_name == 'esun':
+                # 玉山證券 - 支援兩種格式
+                if config.has_section('Esun') or config.has_section('esun'):
+                    # 新格式: [Esun] section
+                    section = 'Esun' if config.has_section('Esun') else 'esun'
+                    result = {
+                        'person_id': config.get(section, 'PersonId', fallback=''),
+                        'account': config.get(section, 'Account', fallback=''),
+                        'cert_path': config.get(section, 'CertPath', fallback=''),
+                        'cert_password': config.get(section, 'CertPassword', fallback=''),
+                        'env': config.get(section, 'Env', fallback=''),
+                        'broker_id': config.get(section, 'BrokerId', fallback='6460'),
+                    }
+                elif config.has_section('Core'):
+                    # 舊格式: [Core], [Cert], [Api], [User] sections
+                    env_map = {'SIMULATION': 'simulation', 'PRODUCTION': 'production'}
+                    raw_env = config.get('Core', 'Environment', fallback='')
+                    result = {
+                        'entry': config.get('Core', 'Entry', fallback=''),
+                        'env': env_map.get(raw_env, raw_env.lower()),
+                        'cert_path': config.get('Cert', 'Path', fallback=''),
+                        'api_key': config.get('Api', 'Key', fallback=''),
+                        'api_secret': config.get('Api', 'Secret', fallback=''),
+                        'account': config.get('User', 'Account', fallback=''),
+                    }
+            else:
+                # 其他券商 - 一般性解析
+                for section in config.sections():
+                    for key, value in config.items(section):
+                        result[key] = value
+
+            return result
+        except Exception as e:
+            logger.error(f"讀取 INI 失敗 {path}: {e}")
+            return None
 
     def _load_json(self, path: Path) -> Optional[Dict]:
         """讀取 JSON 檔案"""
@@ -338,9 +513,10 @@ class UserSetupState:
 
     # 券商設定流程
     WAITING_BROKER_SELECT = 'waiting_broker_select'
+    WAITING_CONFIG_FILE = 'waiting_config_file'  # 等待上傳設定檔 (.ini)
+    WAITING_CERT_FILE = 'waiting_cert_file'      # 等待上傳憑證檔 (.p12)
     WAITING_API_KEY = 'waiting_api_key'
     WAITING_API_SECRET = 'waiting_api_secret'
-    WAITING_CERT_FILE = 'waiting_cert_file'
     WAITING_CERT_PASSWORD = 'waiting_cert_password'
     WAITING_ACCOUNT_ID = 'waiting_account_id'
 

@@ -4,10 +4,12 @@ Telegram 交易機器人啟動程式
 整合多用戶管理和交易功能
 """
 
+import os
 import sys
 import logging
 import signal
 from pathlib import Path
+from configparser import ConfigParser
 
 # 添加專案根目錄到路徑
 project_root = Path(__file__).parent.parent
@@ -16,6 +18,18 @@ sys.path.insert(0, str(project_root))
 from src.core.user_manager import UserManager
 from src.core.bot_manager import BotManager
 from src.telegram.telegram_bot import TradingBot
+
+
+def load_config():
+    """載入設定檔"""
+    config_path = project_root / 'config' / 'telegram.ini'
+
+    if not config_path.exists():
+        return None
+
+    config = ConfigParser()
+    config.read(config_path, encoding='utf-8')
+    return config
 
 
 def main():
@@ -34,27 +48,42 @@ def main():
     print("網格交易 Telegram Bot")
     print("=" * 60)
 
-    # 讀取設定
-    try:
-        from config.grid_config_example import TELEGRAM_BOT_TOKEN
-    except ImportError:
-        print("錯誤: 無法讀取設定檔")
-        print("請確認 config/grid_config_example.py 存在且包含 TELEGRAM_BOT_TOKEN")
+    # 載入設定
+    config = load_config()
+
+    # 優先從設定檔讀取，其次從環境變數
+    if config and config.has_option('Telegram', 'BotToken'):
+        TELEGRAM_BOT_TOKEN = config.get('Telegram', 'BotToken')
+    else:
+        TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
+
+    if not TELEGRAM_BOT_TOKEN or TELEGRAM_BOT_TOKEN == 'YOUR_BOT_TOKEN':
+        print("錯誤: TELEGRAM_BOT_TOKEN 未設定")
+        print()
+        print("請選擇以下方式之一設定 Bot Token:")
+        print("1. 複製 config/telegram.example.ini 為 config/telegram.ini 並填入 Token")
+        print("2. 設定環境變數: export TELEGRAM_BOT_TOKEN='your_token'")
         sys.exit(1)
 
-    if not TELEGRAM_BOT_TOKEN:
-        print("錯誤: TELEGRAM_BOT_TOKEN 未設定")
-        print("請在 config/grid_config_example.py 設定 Bot Token")
-        sys.exit(1)
+    # 讀取其他設定
+    max_users = 10
+    users_dir = './users'
+
+    if config:
+        if config.has_option('Server', 'MaxUsers'):
+            max_users = config.getint('Server', 'MaxUsers')
+        if config.has_option('Server', 'UsersDir'):
+            users_dir = config.get('Server', 'UsersDir')
 
     print(f"Bot Token: {TELEGRAM_BOT_TOKEN[:10]}...{TELEGRAM_BOT_TOKEN[-5:]}")
+    print(f"最大用戶數: {max_users}")
+    print(f"用戶資料目錄: {users_dir}")
 
     # 初始化管理器
-    user_manager = UserManager(base_dir='./users')
+    user_manager = UserManager(base_dir=users_dir)
     bot_manager = BotManager(
         user_manager=user_manager,
-        telegram_token=TELEGRAM_BOT_TOKEN,
-        max_users=10
+        telegram_token=TELEGRAM_BOT_TOKEN
     )
 
     # 建立 Telegram Bot

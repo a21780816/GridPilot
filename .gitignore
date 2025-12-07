@@ -46,8 +46,12 @@ config/*.key
 # SDK files (too large for git)
 *.whl
 
-# Keep example config
+# Telegram config (contains bot token)
+config/telegram.ini
+
+# Keep example configs
 !config/config.example.ini
+!config/telegram.example.ini
 
 # User data
 users/
