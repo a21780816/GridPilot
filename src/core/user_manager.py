@@ -290,8 +290,17 @@ class UserManager:
             chat_id: Telegram Chat ID
             broker_name: 券商名稱 (esun, yuanta, fugle...)
         """
-        broker_path = self._get_brokers_dir(chat_id) / f'{broker_name}.json'
-        return self._load_json(broker_path)
+        # 優先讀取 .ini 檔案 (主要格式)
+        ini_path = self._get_brokers_dir(chat_id) / f'{broker_name}.ini'
+        if ini_path.exists():
+            config = self._load_ini_config(ini_path)
+            if config:
+                config['broker_name'] = broker_name
+                return config
+
+        # 備用：讀取 .json 檔案
+        json_path = self._get_brokers_dir(chat_id) / f'{broker_name}.json'
+        return self._load_json(json_path)
 
     def save_broker_config(self, chat_id, broker_name: str, config: Dict):
         """
