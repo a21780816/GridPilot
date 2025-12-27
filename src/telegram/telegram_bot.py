@@ -57,6 +57,45 @@ class TradingBot:
                 state_manager=self.state_manager
             )
 
+    # ========== 主選單 ==========
+
+    def _get_main_menu_keyboard(self) -> InlineKeyboardMarkup:
+        """取得主選單鍵盤"""
+        keyboard = [
+            [
+                InlineKeyboardButton("📝 新增條件單", callback_data="menu_trigger"),
+                InlineKeyboardButton("📋 條件單列表", callback_data="menu_triggers"),
+            ],
+            [
+                InlineKeyboardButton("💰 查詢股價", callback_data="menu_quote"),
+                InlineKeyboardButton("🔧 券商設定", callback_data="menu_broker"),
+            ],
+            [
+                InlineKeyboardButton("🔑 設定PIN碼", callback_data="menu_setpin"),
+                InlineKeyboardButton("🔐 API Key", callback_data="menu_apikey"),
+            ],
+        ]
+        return InlineKeyboardMarkup(keyboard)
+
+    def _get_back_to_menu_keyboard(self) -> InlineKeyboardMarkup:
+        """取得返回主選單按鈕"""
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("↩️ 返回主選單", callback_data="menu_main")]
+        ])
+
+    async def _show_main_menu(self, message, edit: bool = False):
+        """顯示主選單"""
+        menu_text = (
+            "<b>📊 股票交易助手</b>\n\n"
+            "請選擇功能："
+        )
+        keyboard = self._get_main_menu_keyboard()
+
+        if edit:
+            await message.edit_text(menu_text, parse_mode='HTML', reply_markup=keyboard)
+        else:
+            await message.reply_text(menu_text, parse_mode='HTML', reply_markup=keyboard)
+
     # ========== 基本指令 ==========
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -101,16 +140,12 @@ class TradingBot:
 • API Key：{apikey_status}
 
 <b>{next_step}</b>
-
-<b>功能說明</b>
-• 條件單交易 - 價格到達條件自動下單
-• 即時股價查詢 - /quote [股票代號]
-• REST API - 供 AI 自動化操作
-
-<b>所有指令</b>
-/help - 查看所有指令
         """
-        await update.message.reply_text(welcome_msg.strip(), parse_mode='HTML')
+        await update.message.reply_text(
+            welcome_msg.strip(),
+            parse_mode='HTML',
+            reply_markup=self._get_main_menu_keyboard()
+        )
 
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """處理 /help 指令"""
@@ -119,6 +154,7 @@ class TradingBot:
 
 <b>基本指令</b>
 /start - 開始使用
+/menu - 顯示主選單
 /help - 顯示此說明
 /cancel - 取消目前操作
 
@@ -149,7 +185,17 @@ class TradingBot:
 /stopall - 停止所有網格
 /status [股票代號] - 查看狀態
         """
-        await update.message.reply_text(help_msg.strip(), parse_mode='HTML')
+        await update.message.reply_text(
+            help_msg.strip(),
+            parse_mode='HTML',
+            reply_markup=self._get_back_to_menu_keyboard()
+        )
+
+    async def menu_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """處理 /menu 指令 - 顯示主選單"""
+        chat_id = update.effective_chat.id
+        self.state_manager.clear_state(chat_id)
+        await self._show_main_menu(update.message)
 
     async def cancel_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """處理 /cancel 指令 - 取消目前操作"""
@@ -157,10 +203,16 @@ class TradingBot:
         state = self.state_manager.get_state(chat_id)
 
         if state == UserSetupState.IDLE:
-            await update.message.reply_text("目前沒有進行中的操作")
+            await update.message.reply_text(
+                "目前沒有進行中的操作",
+                reply_markup=self._get_back_to_menu_keyboard()
+            )
         else:
             self.state_manager.clear_state(chat_id)
-            await update.message.reply_text("已取消目前操作")
+            await update.message.reply_text(
+                "已取消目前操作",
+                reply_markup=self._get_back_to_menu_keyboard()
+            )
 
     async def quote_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """處理 /quote 指令 - 查詢即時股價"""
@@ -207,13 +259,23 @@ class TradingBot:
 
             if quote:
                 msg = format_price_info(quote)
-                await message.reply_text(msg, parse_mode='HTML')
+                await message.reply_text(
+                    msg,
+                    parse_mode='HTML',
+                    reply_markup=self._get_back_to_menu_keyboard()
+                )
             else:
-                await message.reply_text(f"找不到 {symbol} 的報價資訊")
+                await message.reply_text(
+                    f"找不到 {symbol} 的報價資訊",
+                    reply_markup=self._get_back_to_menu_keyboard()
+                )
 
         except Exception as e:
             logger.error(f"查詢股價失敗: {e}")
-            await message.reply_text(f"查詢失敗: {e}")
+            await message.reply_text(
+                f"查詢失敗: {e}",
+                reply_markup=self._get_back_to_menu_keyboard()
+            )
 
     # ========== 券商管理 ==========
 
@@ -592,7 +654,116 @@ class TradingBot:
 
         if data == "cancel":
             self.state_manager.clear_state(chat_id)
-            await query.edit_message_text("已取消")
+            await query.edit_message_text(
+                "已取消",
+                reply_markup=self._get_back_to_menu_keyboard()
+            )
+            return
+
+        # ========== 主選單回調 ==========
+        if data == "menu_main":
+            self.state_manager.clear_state(chat_id)
+            await self._show_main_menu(query.message, edit=True)
+            return
+
+        if data == "menu_trigger":
+            # 新增條件單
+            if self.trigger_handlers:
+                await self.trigger_handlers.start_trigger_setup(query, context)
+            else:
+                await query.edit_message_text("條件單功能未啟用")
+            return
+
+        if data == "menu_triggers":
+            # 條件單列表
+            if self.trigger_handlers:
+                await self.trigger_handlers.show_triggers_list(query, context)
+            else:
+                await query.edit_message_text("條件單功能未啟用")
+            return
+
+        if data == "menu_quote":
+            # 查詢股價 - 顯示熱門股票選項
+            keyboard = [
+                [
+                    InlineKeyboardButton("2330 台積電", callback_data="quote_2330"),
+                    InlineKeyboardButton("2317 鴻海", callback_data="quote_2317"),
+                    InlineKeyboardButton("2454 聯發科", callback_data="quote_2454"),
+                ],
+                [
+                    InlineKeyboardButton("2881 富邦金", callback_data="quote_2881"),
+                    InlineKeyboardButton("2882 國泰金", callback_data="quote_2882"),
+                    InlineKeyboardButton("0050 元大50", callback_data="quote_0050"),
+                ],
+                [
+                    InlineKeyboardButton("2603 長榮", callback_data="quote_2603"),
+                    InlineKeyboardButton("2002 中鋼", callback_data="quote_2002"),
+                    InlineKeyboardButton("2412 中華電", callback_data="quote_2412"),
+                ],
+                [InlineKeyboardButton("↩️ 返回主選單", callback_data="menu_main")]
+            ]
+            await query.edit_message_text(
+                "<b>查詢即時股價</b>\n\n"
+                "選擇熱門股票，或直接輸入股票代號：",
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            self.state_manager.set_state(chat_id, UserSetupState.WAITING_QUOTE_SYMBOL)
+            return
+
+        if data == "menu_broker":
+            # 券商設定
+            self.state_manager.clear_state(chat_id)
+            existing_brokers = self.user_manager.get_all_broker_configs(chat_id)
+
+            if existing_brokers:
+                msg = "<b>券商管理</b>\n\n<b>已設定的券商：</b>\n"
+                for b in existing_brokers:
+                    broker_name = SUPPORTED_BROKERS.get(b['broker_name'], {}).get('name', b['broker_name'])
+                    env = b.get('env', 'N/A')
+                    env_display = '模擬' if env == 'simulation' else '正式' if env == 'production' else env
+                    msg += f"• {broker_name} ({env_display})\n"
+
+                keyboard = [
+                    [InlineKeyboardButton("新增券商", callback_data="broker_add_new")],
+                    [InlineKeyboardButton("重新設定", callback_data="broker_reconfigure")],
+                    [InlineKeyboardButton("↩️ 返回主選單", callback_data="menu_main")]
+                ]
+                await query.edit_message_text(
+                    msg,
+                    parse_mode='HTML',
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
+            else:
+                # 沒有券商設定，顯示券商選擇清單
+                brokers = get_broker_list()
+                keyboard = []
+                for broker_id, broker_name in brokers.items():
+                    keyboard.append([InlineKeyboardButton(broker_name, callback_data=f"broker_select_{broker_id}")])
+                keyboard.append([InlineKeyboardButton("↩️ 返回主選單", callback_data="menu_main")])
+
+                await query.edit_message_text(
+                    "<b>新增券商設定</b>\n\n請選擇您的券商：",
+                    parse_mode='HTML',
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
+                self.state_manager.set_state(chat_id, UserSetupState.WAITING_BROKER_SELECT)
+            return
+
+        if data == "menu_setpin":
+            # 設定 PIN 碼
+            if self.trigger_handlers:
+                await self.trigger_handlers.start_setpin(query, context)
+            else:
+                await query.edit_message_text("PIN 碼功能未啟用")
+            return
+
+        if data == "menu_apikey":
+            # API Key 管理
+            if self.trigger_handlers:
+                await self.trigger_handlers.show_apikey(query, context)
+            else:
+                await query.edit_message_text("API Key 功能未啟用")
             return
 
         # 股價查詢
@@ -995,9 +1166,9 @@ class TradingBot:
                     f"✅ <b>券商設定完成</b>\n\n"
                     f"券商: {broker_name}\n"
                     f"帳號: {saved_config.get('account', 'N/A')}\n"
-                    f"環境: {env_display}\n\n"
-                    f"使用 /grid 設定網格策略",
-                    parse_mode='HTML'
+                    f"環境: {env_display}",
+                    parse_mode='HTML',
+                    reply_markup=self._get_back_to_menu_keyboard()
                 )
 
             except Exception as e:
@@ -1039,6 +1210,7 @@ class TradingBot:
 
         # 註冊指令處理器
         self.app.add_handler(CommandHandler("start", self.start))
+        self.app.add_handler(CommandHandler("menu", self.menu_command))
         self.app.add_handler(CommandHandler("help", self.help_command))
         self.app.add_handler(CommandHandler("cancel", self.cancel_command))
         self.app.add_handler(CommandHandler("quote", self.quote_command))

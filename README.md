@@ -1,16 +1,27 @@
 # GridPilot
 
-台股網格交易機器人 - 使用玉山證券 API 實現的自動化網格交易系統，支援 Telegram 機器人互動操作。
+台股自動化交易系統 - 支援條件單與網格交易，使用玉山證券 API，提供 Telegram Bot 與 REST API 雙介面操作。
 
 ## 功能特色
 
+### 條件單系統
+- **價格觸發自動下單** - 當股價達到設定條件時自動執行買賣
+- **多種觸發條件** - 支援 `>=`（漲到）、`<=`（跌到）、`==`（等於）
+- **多種交易類型** - 現股、現沖、融資、融券
+- **市價/限價單** - 支援市價單與限價單
+- **REST API** - 提供 API 供外部程式自動化操作
+- **PIN 碼驗證** - 敏感操作需 PIN 碼確認
+
+### 網格交易
 - **自動化網格交易** - 在設定的價格區間內自動執行買賣
-- **Telegram 機器人** - 透過 Telegram 設定、控制和監控交易
-- **檔案上傳設定** - 直接上傳 `.ini` 設定檔和 `.p12` 憑證，無需手動輸入路徑
-- **即時股價查詢** - 設定網格時自動顯示當前股價資訊
 - **多標的支援** - 可同時運行多個股票的網格策略
-- **即時通知** - 下單、成交、停損停利即時推送
 - **風險控制** - 支援最大持倉、最大本金、停損停利設定
+
+### 共用功能
+- **Telegram 機器人** - 透過 Telegram 設定、控制和監控交易
+- **檔案上傳設定** - 直接上傳 `.ini` 設定檔和 `.p12` 憑證
+- **即時股價查詢** - 查詢即時股價資訊
+- **即時通知** - 下單、成交、觸發即時推送
 
 ## 系統架構
 
@@ -18,15 +29,18 @@
 flowchart TB
     subgraph User["使用者介面"]
         TG[Telegram App]
-        CLI[命令列]
+        API[REST API Client]
     end
 
-    subgraph TelegramLayer["Telegram 層"]
+    subgraph Interface["介面層"]
         TB[TelegramBot<br/>指令處理]
+        FA[FastAPI<br/>REST API]
         TN[TelegramNotifier<br/>通知推送]
     end
 
     subgraph CoreLayer["核心層"]
+        TOM[TriggerOrderManager<br/>條件單管理]
+        PM[PriceMonitor<br/>價格監控]
         BM[BotManager<br/>機器人管理]
         UM[UserManager<br/>用戶管理]
         GTB[GridTradingBot<br/>網格交易引擎]
@@ -43,35 +57,41 @@ flowchart TB
     end
 
     subgraph Storage["資料儲存"]
-        CONFIG[設定檔]
-        USERS[用戶資料]
+        JSON[JSON Storage<br/>條件單/用戶資料]
     end
 
     TG <--> TB
-    CLI --> GTB
-    TB <--> BM
+    API <--> FA
+    TB <--> TOM
+    FA <--> TOM
     TB <--> UM
-    BM <--> GTB
-    GTB --> TN
+    FA <--> UM
+    TOM <--> PM
+    PM <--> BA
+    TOM --> TN
     TN --> TG
-    UM <--> USERS
+    BM <--> GTB
     GTB <--> BA
     BA <--> ESUN
     ESUN <--> TRADE
     ESUN <--> MARKET
-    GTB <--> CONFIG
+    TOM <--> JSON
+    UM <--> JSON
 ```
 
 ### 架構說明
 
 | 層級 | 元件 | 說明 |
 |------|------|------|
-| **使用者介面** | Telegram / CLI | 用戶透過 Telegram 或命令列操作 |
-| **Telegram 層** | TelegramBot | 處理用戶指令、互動式設定流程 |
+| **使用者介面** | Telegram / REST API | 用戶透過 Telegram 或 API 操作 |
+| **介面層** | TelegramBot | 處理用戶指令、互動式設定流程 |
+| | FastAPI | 提供 REST API 端點 |
 | | TelegramNotifier | 推送交易通知、狀態報告 |
-| **核心層** | BotManager | 管理多個網格機器人的生命週期 |
-| | UserManager | 管理用戶設定、券商配置、網格策略 |
-| | GridTradingBot | 網格交易核心邏輯、價格監控、下單執行 |
+| **核心層** | TriggerOrderManager | 條件單 CRUD 與執行管理 |
+| | PriceMonitor | 每 30 秒監控股價並觸發條件單 |
+| | BotManager | 管理多個網格機器人的生命週期 |
+| | UserManager | 管理用戶設定、券商配置、PIN 碼、API Key |
+| | GridTradingBot | 網格交易核心邏輯 |
 | **券商層** | Broker Adapter | 統一的券商介面抽象 |
 | | 玉山證券 SDK | 實際的交易與行情 API 實作 |
 
@@ -178,16 +198,27 @@ uv run python scripts/run_telegram_bot.py
 
 在 Telegram 中與你的 Bot 對話：
 
-1. `/start` - 開始使用
-2. `/broker` - 設定券商 API
+1. `/start` - 開始使用，進入主選單
+2. 選擇「券商設定」或 `/broker` - 設定券商 API
    - 選擇券商後，上傳 `.ini` 設定檔
    - 再上傳 `.p12` 憑證檔
-3. `/grid` - 新增網格策略
+3. `/setpin` - 設定 PIN 碼（條件單必要）
+4. `/trigger` - 新增條件單
    - 輸入股票代號後會自動顯示即時股價
-   - 依提示輸入價格區間和網格參數
-4. `/run 2330` - 啟動交易
+   - 選擇觸發條件、交易類型、訂單類型
+   - 輸入 PIN 碼確認
 
 所有設定都會自動儲存在 `users/{chat_id}/` 目錄下。
+
+### 5. 啟動 REST API（可選）
+
+如需透過 API 操作條件單：
+
+```bash
+uv run python scripts/run_api.py
+```
+
+API 預設運行在 `http://localhost:8000`，API 文件位於 `/docs`。
 
 ### 券商設定檔格式
 
@@ -205,13 +236,38 @@ BrokerId = 6460
 
 ## Telegram 指令
 
+### 基本指令
+
 | 指令 | 說明 |
 |------|------|
-| `/start` | 開始使用 |
+| `/start` | 開始使用，顯示主選單 |
+| `/menu` | 顯示主選單 |
 | `/help` | 顯示說明 |
+| `/cancel` | 取消目前操作 |
+| `/quote [代號]` | 查詢即時股價 |
+
+### 券商管理
+
+| 指令 | 說明 |
+|------|------|
 | `/broker` | 管理券商設定（新增/重新設定） |
 | `/brokers` | 查看已設定的券商 |
-| `/grid` | 新增網格策略（含即時股價顯示） |
+
+### 條件單
+
+| 指令 | 說明 |
+|------|------|
+| `/trigger` | 新增條件單（互動式引導） |
+| `/triggers` | 查看所有條件單 |
+| `/deltrigger [ID]` | 刪除條件單（需 PIN 碼） |
+| `/setpin` | 設定/更新 PIN 碼 |
+| `/apikey` | 查看/重新產生 API Key |
+
+### 網格交易
+
+| 指令 | 說明 |
+|------|------|
+| `/grid` | 新增網格策略 |
 | `/grids` | 查看所有網格策略 |
 | `/edit [代號]` | 修改網格設定 |
 | `/delete [代號]` | 刪除網格設定 |
@@ -219,8 +275,58 @@ BrokerId = 6460
 | `/stop [代號]` | 停止指定標的 |
 | `/runall` | 啟動所有網格 |
 | `/stopall` | 停止所有網格 |
-| `/status` | 查看運行狀態 |
-| `/status [代號]` | 查看指定標的狀態 |
+| `/status [代號]` | 查看運行狀態 |
+
+## REST API
+
+條件單系統提供 REST API 供外部程式操作。
+
+### 認證方式
+
+在 HTTP Header 中加入 API Key：
+
+```
+X-API-Key: sk-your-api-key-here
+```
+
+API Key 可透過 Telegram Bot 的 `/apikey` 指令取得。
+
+### API 端點
+
+| Method | Endpoint | 說明 |
+|--------|----------|------|
+| `POST` | `/api/v1/triggers` | 建立條件單 |
+| `GET` | `/api/v1/triggers` | 列出條件單 |
+| `GET` | `/api/v1/triggers/{id}` | 取得條件單詳情 |
+| `PUT` | `/api/v1/triggers/{id}` | 更新條件單 |
+| `DELETE` | `/api/v1/triggers/{id}` | 刪除條件單 |
+| `GET` | `/api/v1/triggers/stocks/{symbol}/quote` | 查詢即時股價 |
+
+### 建立條件單範例
+
+```bash
+curl -X POST http://localhost:8000/api/v1/triggers \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: sk-your-api-key" \
+  -d '{
+    "symbol": "2330",
+    "condition": ">=",
+    "trigger_price": 1000,
+    "order_action": "buy",
+    "order_type": "market",
+    "trade_type": "cash",
+    "quantity": 1
+  }'
+```
+
+### 交易類型說明
+
+| 值 | 說明 |
+|-----|------|
+| `cash` | 現股 |
+| `day_trade` | 現沖（當沖） |
+| `margin_buy` | 融資買進 |
+| `short_sell` | 融券賣出 |
 
 ## 專案結構
 
@@ -230,34 +336,96 @@ GridPilot/
 │   ├── telegram.example.ini      # Telegram Bot 設定範例
 │   └── config.example.ini        # 券商 API 設定範例
 ├── src/
+│   ├── api/                      # REST API (FastAPI)
+│   │   ├── main.py               # API 入口
+│   │   ├── dependencies.py       # 依賴注入
+│   │   ├── middleware/           # 中介層
+│   │   │   └── auth.py           # API Key 認證
+│   │   ├── models/               # Pydantic 模型
+│   │   │   ├── requests.py       # 請求模型
+│   │   │   └── responses.py      # 響應模型
+│   │   └── routes/               # 路由
+│   │       ├── health.py         # 健康檢查
+│   │       ├── trigger_orders.py # 條件單 API
+│   │       └── users.py          # 用戶 API
 │   ├── brokers/                  # 券商介面
 │   │   ├── base.py               # 抽象基底類別
 │   │   └── esun.py               # 玉山證券實作
 │   ├── core/                     # 核心邏輯
+│   │   ├── trigger_order_manager.py  # 條件單管理器
+│   │   ├── price_monitor.py      # 價格監控服務
 │   │   ├── grid_trading_bot.py   # 網格交易機器人
 │   │   ├── bot_manager.py        # 機器人管理器
 │   │   ├── user_manager.py       # 用戶管理
-│   │   ├── stock_info.py         # 台股即時報價查詢
-│   │   └── calculate_capital.py  # 本金計算器
+│   │   └── stock_info.py         # 台股即時報價查詢
+│   ├── models/                   # 資料模型
+│   │   ├── enums.py              # 列舉定義
+│   │   ├── trigger_order.py      # 條件單模型
+│   │   └── order_log.py          # 執行紀錄模型
+│   ├── storage/                  # 儲存層
+│   │   ├── base.py               # 抽象基類
+│   │   └── json_storage.py       # JSON 檔案儲存
 │   └── telegram/                 # Telegram 整合
 │       ├── telegram_bot.py       # Telegram Bot 主程式
-│       └── telegram_notifier.py  # 通知模組
+│       ├── telegram_notifier.py  # 通知模組
+│       └── handlers/             # 指令處理器
+│           └── trigger_handlers.py  # 條件單指令
 ├── scripts/                      # 執行腳本
 │   ├── run_telegram_bot.py       # 啟動 Telegram Bot
+│   ├── run_api.py                # 啟動 REST API
 │   └── get_telegram_chat_id.py   # 取得 Chat ID
 ├── users/                        # 用戶資料（自動生成）
 │   └── {chat_id}/                # 各用戶獨立目錄
-│       ├── config.json           # 用戶基本設定
+│       ├── config.json           # 用戶基本設定（含 PIN、API Key）
 │       ├── brokers/              # 券商設定 (.ini)
 │       ├── credentials/          # 憑證檔案 (.p12)
-│       └── grids/                # 網格策略設定
+│       ├── grids/                # 網格策略設定
+│       └── triggers/             # 條件單資料 (.json)
 ├── tests/                        # 測試程式
 └── docs/                         # 文件
 ```
 
+## 條件單使用情境
+
+### 突破買入
+
+當股價突破壓力位時自動買入：
+
+```
+股票: 2330 台積電
+條件: 價格 >= 1050
+動作: 現股 市價買 1張
+```
+
+### 跌破停損
+
+當股價跌破支撐位時自動賣出：
+
+```
+股票: 2330 台積電
+條件: 價格 <= 950
+動作: 現股 市價賣 1張
+```
+
+### 現沖交易
+
+配合日內沖銷策略：
+
+```
+股票: 2330 台積電
+條件: 價格 >= 1020
+動作: 現沖 市價買 1張
+```
+
 ## 風險提醒
 
-### 適用場景
+### 條件單風險
+
+- ⚠️ **價格監控延遲** - 系統每 30 秒查詢一次股價，可能錯過極短期價格變動
+- ⚠️ **下單不保證成交** - 市價單或限價單可能因流動性不足而無法成交
+- ⚠️ **觸發時機** - 價格達到條件時立即觸發，無法預測後續走勢
+
+### 網格交易適用場景
 
 - ✅ 震盪盤整行情
 - ✅ 價格波動規律的標的
@@ -267,9 +435,10 @@ GridPilot/
 ### 注意事項
 
 1. **先使用模擬環境測試** - 確認策略運作正常後再使用正式環境
-2. **設定合理的價格區間** - 根據標的的歷史波動設定
+2. **設定合理的觸發價格** - 根據標的的技術分析設定
 3. **控制資金投入** - 建議單一標的不超過總資金 20%
 4. **定期檢查** - 監控交易狀況，適時調整策略
+5. **保管好 API Key** - 切勿分享給他人
 
 ## 策略範例
 

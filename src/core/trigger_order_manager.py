@@ -59,10 +59,10 @@ class TriggerOrderManager:
                              condition: str,
                              trigger_price: float,
                              order_action: str,
-                             quantity: int,
                              order_type: str = "limit",
-                             order_price: Optional[float] = None,
                              trade_type: str = "cash",
+                             quantity: int = 1,
+                             order_price: Optional[float] = None,
                              broker_name: str = "esun",
                              expires_at: Optional[datetime] = None,
                              note: str = "") -> TriggerOrder:
@@ -75,10 +75,10 @@ class TriggerOrderManager:
             condition: 觸發條件 (">=", "<=", "==")
             trigger_price: 觸發價格
             order_action: 訂單方向 ("buy", "sell")
-            quantity: 張數
             order_type: 訂單類型 ("market", "limit")
-            order_price: 限價單價格
             trade_type: 交易類型 ("cash", "day_trade", "margin_buy", "short_sell")
+            quantity: 張數
+            order_price: 限價單價格
             broker_name: 券商名稱
             expires_at: 過期時間
             note: 備註

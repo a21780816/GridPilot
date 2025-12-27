@@ -54,6 +54,12 @@ class TriggerHandlers:
         self.user_manager = user_manager
         self.state_manager = state_manager
 
+    def _get_back_to_menu_keyboard(self) -> InlineKeyboardMarkup:
+        """取得返回主選單按鈕"""
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("↩️ 返回主選單", callback_data="menu_main")]
+        ])
+
     # ========== 指令處理 ==========
 
     async def trigger_command(self, update: Update,
@@ -274,7 +280,7 @@ class TriggerHandlers:
             masked_key = api_key[:10] + "..." + api_key[-4:]
             keyboard = [
                 [InlineKeyboardButton("重新產生", callback_data="regenerate_apikey")],
-                [InlineKeyboardButton("取消", callback_data="cancel")]
+                [InlineKeyboardButton("↩️ 返回主選單", callback_data="menu_main")]
             ]
 
             await update.message.reply_text(
@@ -289,10 +295,209 @@ class TriggerHandlers:
         else:
             keyboard = [
                 [InlineKeyboardButton("產生 API Key", callback_data="generate_apikey")],
-                [InlineKeyboardButton("取消", callback_data="cancel")]
+                [InlineKeyboardButton("↩️ 返回主選單", callback_data="menu_main")]
             ]
 
             await update.message.reply_text(
+                "<b>API Key</b>\n\n"
+                "您尚未產生 API Key\n"
+                "API Key 用於 REST API 認證，可讓外部程式操作條件單",
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+
+    # ========== 主選單回調方法 ==========
+
+    async def start_trigger_setup(self, query, context: ContextTypes.DEFAULT_TYPE):
+        """從主選單開始新增條件單流程"""
+        chat_id = query.message.chat_id
+
+        # 確保用戶已註冊
+        if not self.user_manager.user_exists(chat_id):
+            self.user_manager.create_user(
+                chat_id,
+                username=query.from_user.username,
+                first_name=query.from_user.first_name
+            )
+
+        # 檢查是否有設定券商
+        brokers = self.user_manager.get_broker_names(chat_id)
+        if not brokers:
+            await query.edit_message_text(
+                "請先使用券商設定功能設定券商 API\n"
+                "設定完成後才能建立條件單",
+                reply_markup=self._get_back_to_menu_keyboard()
+            )
+            return
+
+        # 檢查是否已設定 PIN 碼
+        if not self.user_manager.has_pin_code(chat_id):
+            await query.edit_message_text(
+                "請先使用設定PIN碼功能設定 PIN 碼\n"
+                "PIN 碼用於驗證敏感操作",
+                reply_markup=self._get_back_to_menu_keyboard()
+            )
+            return
+
+        self.state_manager.clear_state(chat_id)
+
+        keyboard = [
+            [InlineKeyboardButton("↩️ 返回主選單", callback_data="menu_main")]
+        ]
+
+        await query.edit_message_text(
+            "<b>新增條件單</b>\n\n"
+            "請輸入股票代號：\n"
+            "例如: <code>2330</code> (台積電)",
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        self.state_manager.set_state(chat_id, TriggerSetupState.WAITING_SYMBOL)
+
+    async def show_triggers_list(self, query, context: ContextTypes.DEFAULT_TYPE):
+        """從主選單顯示條件單列表"""
+        chat_id = query.message.chat_id
+
+        triggers = self.trigger_manager.get_user_triggers(str(chat_id))
+
+        if not triggers:
+            await query.edit_message_text(
+                "尚未設定任何條件單\n\n"
+                "點擊「新增條件單」開始建立",
+                reply_markup=self._get_back_to_menu_keyboard()
+            )
+            return
+
+        status_icons = {
+            'active': '🟢',
+            'triggered': '🟡',
+            'executed': '✅',
+            'failed': '❌',
+            'cancelled': '⚫',
+            'expired': '⏰'
+        }
+
+        trade_type_map = {
+            'cash': '現股',
+            'day_trade': '現沖',
+            'margin_buy': '融資',
+            'short_sell': '融券',
+        }
+
+        msg = "<b>條件單列表</b>\n\n"
+
+        for t in triggers[:10]:  # 最多顯示 10 筆
+            icon = status_icons.get(t.status.value, '⚪')
+            action = "買" if t.order_action.value == "buy" else "賣"
+            order_type = "市" if t.order_type.value == "market" else "限"
+            trade_type = trade_type_map.get(t.trade_type.value, '現股')
+
+            msg += (
+                f"{icon} <code>{t.symbol}</code> | "
+                f"價格 {t.condition.value} {t.trigger_price}\n"
+                f"   → {trade_type} {order_type}價{action} {t.quantity}張 | "
+                f"ID: <code>{t.id[:8]}</code>\n"
+            )
+
+        if len(triggers) > 10:
+            msg += f"\n... 還有 {len(triggers) - 10} 筆\n"
+
+        # 建立刪除按鈕
+        keyboard = []
+        active_triggers = [t for t in triggers if t.status.value == 'active'][:5]
+        if active_triggers:
+            for t in active_triggers:
+                keyboard.append([InlineKeyboardButton(
+                    f"刪除 {t.symbol} ({t.id[:8]})",
+                    callback_data=f"deltrigger_{t.id[:12]}"
+                )])
+
+        keyboard.append([InlineKeyboardButton("↩️ 返回主選單", callback_data="menu_main")])
+
+        await query.edit_message_text(
+            msg.strip(),
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+    async def start_setpin(self, query, context: ContextTypes.DEFAULT_TYPE):
+        """從主選單開始設定 PIN 碼"""
+        chat_id = query.message.chat_id
+
+        # 確保用戶已註冊
+        if not self.user_manager.user_exists(chat_id):
+            self.user_manager.create_user(
+                chat_id,
+                username=query.from_user.username,
+                first_name=query.from_user.first_name
+            )
+
+        has_pin = self.user_manager.has_pin_code(chat_id)
+
+        if has_pin:
+            msg = (
+                "<b>更新 PIN 碼</b>\n\n"
+                "您已設定 PIN 碼\n"
+                "請輸入新的 PIN 碼 (4-6 位數字)："
+            )
+        else:
+            msg = (
+                "<b>設定 PIN 碼</b>\n\n"
+                "PIN 碼用於驗證敏感操作（如下單、刪除條件單）\n\n"
+                "請輸入 PIN 碼 (4-6 位數字)："
+            )
+
+        self.state_manager.clear_state(chat_id)
+        self.state_manager.set_state(chat_id, TriggerSetupState.WAITING_SET_PIN)
+
+        keyboard = [
+            [InlineKeyboardButton("↩️ 返回主選單", callback_data="menu_main")]
+        ]
+
+        await query.edit_message_text(
+            msg,
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+    async def show_apikey(self, query, context: ContextTypes.DEFAULT_TYPE):
+        """從主選單顯示 API Key"""
+        chat_id = query.message.chat_id
+
+        # 確保用戶已註冊
+        if not self.user_manager.user_exists(chat_id):
+            self.user_manager.create_user(
+                chat_id,
+                username=query.from_user.username,
+                first_name=query.from_user.first_name
+            )
+
+        api_key = self.user_manager.get_api_key(chat_id)
+
+        if api_key:
+            # 顯示部分 API Key
+            masked_key = api_key[:10] + "..." + api_key[-4:]
+            keyboard = [
+                [InlineKeyboardButton("重新產生", callback_data="regenerate_apikey")],
+                [InlineKeyboardButton("↩️ 返回主選單", callback_data="menu_main")]
+            ]
+
+            await query.edit_message_text(
+                f"<b>您的 API Key</b>\n\n"
+                f"<code>{masked_key}</code>\n\n"
+                f"API Key 用於 REST API 認證\n"
+                f"請妥善保管，不要分享給他人\n\n"
+                f"點擊「重新產生」會使舊的 API Key 失效",
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+        else:
+            keyboard = [
+                [InlineKeyboardButton("產生 API Key", callback_data="generate_apikey")],
+                [InlineKeyboardButton("↩️ 返回主選單", callback_data="menu_main")]
+            ]
+
+            await query.edit_message_text(
                 "<b>API Key</b>\n\n"
                 "您尚未產生 API Key\n"
                 "API Key 用於 REST API 認證，可讓外部程式操作條件單",
@@ -555,9 +760,15 @@ class TriggerHandlers:
             success = self.trigger_manager.cancel_trigger_order(trigger_id, str(chat_id))
 
             if success:
-                await update.message.reply_text("條件單已取消")
+                await update.message.reply_text(
+                    "條件單已取消",
+                    reply_markup=self._get_back_to_menu_keyboard()
+                )
             else:
-                await update.message.reply_text("取消失敗，請確認條件單狀態")
+                await update.message.reply_text(
+                    "取消失敗，請確認條件單狀態",
+                    reply_markup=self._get_back_to_menu_keyboard()
+                )
 
         elif temp.get('symbol'):
             # 建立條件單
@@ -603,10 +814,14 @@ class TriggerHandlers:
         if success:
             await update.message.reply_text(
                 "PIN 碼設定成功\n\n"
-                "現在您可以使用 /trigger 建立條件單了"
+                "現在您可以使用條件單功能了",
+                reply_markup=self._get_back_to_menu_keyboard()
             )
         else:
-            await update.message.reply_text("PIN 碼設定失敗，請稍後再試")
+            await update.message.reply_text(
+                "PIN 碼設定失敗，請稍後再試",
+                reply_markup=self._get_back_to_menu_keyboard()
+            )
 
         self.state_manager.clear_state(chat_id)
 
@@ -629,8 +844,8 @@ class TriggerHandlers:
             symbol=temp.get('symbol'),
             condition=temp.get('condition'),
             trigger_price=temp.get('trigger_price'),
-            order_type=temp.get('order_type'),
             order_action=temp.get('action'),
+            order_type=temp.get('order_type'),
             trade_type=temp.get('trade_type', 'cash'),
             quantity=temp.get('quantity'),
             order_price=temp.get('order_price'),
@@ -654,9 +869,9 @@ class TriggerHandlers:
             f"股票: {trigger.symbol}\n"
             f"條件: 價格 {trigger.condition.value} {trigger.trigger_price}\n"
             f"交易類型: {trade_type}\n"
-            f"動作: {order_type}{action} {trigger.quantity}張\n\n"
-            f"使用 /triggers 查看所有條件單",
-            parse_mode='HTML'
+            f"動作: {order_type}{action} {trigger.quantity}張",
+            parse_mode='HTML',
+            reply_markup=self._get_back_to_menu_keyboard()
         )
 
     # ========== 回調處理 ==========
@@ -810,7 +1025,10 @@ class TriggerHandlers:
 
         elif data == "trigger_confirm_no":
             self.state_manager.clear_state(chat_id)
-            await query.edit_message_text("已取消")
+            await query.edit_message_text(
+                "已取消",
+                reply_markup=self._get_back_to_menu_keyboard()
+            )
             return True
 
         elif data.startswith("deltrigger_"):
@@ -849,10 +1067,14 @@ class TriggerHandlers:
                     f"使用方式：\n"
                     f"在 HTTP 請求中加入 Header:\n"
                     f"<code>X-API-Key: {api_key[:20]}...</code>",
-                    parse_mode='HTML'
+                    parse_mode='HTML',
+                    reply_markup=self._get_back_to_menu_keyboard()
                 )
             except Exception as e:
-                await query.edit_message_text(f"產生 API Key 失敗: {e}")
+                await query.edit_message_text(
+                    f"產生 API Key 失敗: {e}",
+                    reply_markup=self._get_back_to_menu_keyboard()
+                )
             return True
 
         return False
