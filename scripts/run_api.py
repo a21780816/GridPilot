@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
-Telegram 交易機器人啟動程式
-整合多用戶管理、交易功能和條件單系統
+條件單 REST API 啟動程式
 """
 
 import os
@@ -11,16 +10,17 @@ import signal
 from pathlib import Path
 from configparser import ConfigParser
 
+import uvicorn
+
 # 添加專案根目錄到路徑
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 from src.core.user_manager import UserManager
-from src.core.bot_manager import BotManager
 from src.core.trigger_order_manager import TriggerOrderManager
 from src.core.price_monitor import PriceMonitorService
 from src.storage import JsonStorage
-from src.telegram.telegram_bot import TradingBot
+from src.api import create_app
 
 
 def load_config():
@@ -42,13 +42,13 @@ def main():
         format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
         handlers=[
             logging.StreamHandler(),
-            logging.FileHandler('telegram_bot.log', encoding='utf-8')
+            logging.FileHandler('api.log', encoding='utf-8')
         ]
     )
     logger = logging.getLogger('Main')
 
     print("=" * 60)
-    print("網格交易 Telegram Bot")
+    print("條件單交易 REST API")
     print("=" * 60)
 
     # 載入設定
@@ -61,33 +61,31 @@ def main():
         TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 
     if not TELEGRAM_BOT_TOKEN or TELEGRAM_BOT_TOKEN == 'YOUR_BOT_TOKEN':
-        print("錯誤: TELEGRAM_BOT_TOKEN 未設定")
-        print()
-        print("請選擇以下方式之一設定 Bot Token:")
-        print("1. 複製 config/telegram.example.ini 為 config/telegram.ini 並填入 Token")
-        print("2. 設定環境變數: export TELEGRAM_BOT_TOKEN='your_token'")
-        sys.exit(1)
+        print("警告: TELEGRAM_BOT_TOKEN 未設定，條件單觸發時將無法發送通知")
+        TELEGRAM_BOT_TOKEN = None
 
     # 讀取其他設定
-    max_users = 10
     users_dir = './users'
+    api_host = '0.0.0.0'
+    api_port = 8000
+    debug = False
 
     if config:
-        if config.has_option('Server', 'MaxUsers'):
-            max_users = config.getint('Server', 'MaxUsers')
         if config.has_option('Server', 'UsersDir'):
             users_dir = config.get('Server', 'UsersDir')
+        if config.has_option('API', 'Host'):
+            api_host = config.get('API', 'Host')
+        if config.has_option('API', 'Port'):
+            api_port = config.getint('API', 'Port')
+        if config.has_option('API', 'Debug'):
+            debug = config.getboolean('API', 'Debug')
 
-    print(f"Bot Token: {TELEGRAM_BOT_TOKEN[:10]}...{TELEGRAM_BOT_TOKEN[-5:]}")
-    print(f"最大用戶數: {max_users}")
     print(f"用戶資料目錄: {users_dir}")
+    print(f"API 服務: http://{api_host}:{api_port}")
+    print(f"API 文件: http://{api_host}:{api_port}/docs")
 
     # 初始化管理器
     user_manager = UserManager(base_dir=users_dir)
-    bot_manager = BotManager(
-        user_manager=user_manager,
-        telegram_token=TELEGRAM_BOT_TOKEN
-    )
 
     # 初始化儲存層
     storage = JsonStorage(base_dir=users_dir)
@@ -105,19 +103,17 @@ def main():
         check_interval=30  # 每 30 秒檢查
     )
 
-    # 建立 Telegram Bot
-    telegram_bot = TradingBot(
-        token=TELEGRAM_BOT_TOKEN,
+    # 建立 FastAPI 應用
+    app = create_app(
         user_manager=user_manager,
-        bot_manager=bot_manager,
-        trigger_manager=trigger_manager
+        trigger_manager=trigger_manager,
+        debug=debug
     )
 
     # 處理關閉信號
     def shutdown(signum, frame):
         print("\n正在關閉...")
         price_monitor.stop()
-        bot_manager.stop_all()
         trigger_manager.cleanup_all_brokers()
         sys.exit(0)
 
@@ -129,16 +125,20 @@ def main():
     price_monitor.start()
     print("價格監控服務已啟動 (每 30 秒檢查)")
 
-    # 啟動 Bot
-    print("\nBot 啟動中...")
+    # 啟動 API 服務
+    print("\nAPI 服務啟動中...")
     print("按 Ctrl+C 停止\n")
 
     try:
-        telegram_bot.run()
+        uvicorn.run(
+            app,
+            host=api_host,
+            port=api_port,
+            log_level="info" if debug else "warning"
+        )
     except Exception as e:
-        logger.error(f"Bot 執行錯誤: {e}")
+        logger.error(f"API 執行錯誤: {e}")
         price_monitor.stop()
-        bot_manager.stop_all()
         trigger_manager.cleanup_all_brokers()
         sys.exit(1)
 

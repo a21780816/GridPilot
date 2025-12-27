@@ -3,6 +3,7 @@
 使用公開 API 查詢台股即時資訊
 """
 
+import asyncio
 import logging
 from typing import Dict, Optional
 from dataclasses import dataclass
@@ -10,6 +11,10 @@ from dataclasses import dataclass
 import httpx
 
 logger = logging.getLogger('StockInfo')
+
+# HTTP 重試設定
+HTTP_MAX_RETRIES = 3
+HTTP_RETRY_DELAY = 0.5  # 秒
 
 # 台股股票名稱對照（常用）
 STOCK_NAMES = {
@@ -76,26 +81,57 @@ async def get_stock_quote(symbol: str) -> Optional[StockQuote]:
         return None
 
 
+async def _fetch_with_retry(url: str, max_retries: int = HTTP_MAX_RETRIES) -> Optional[dict]:
+    """帶重試機制的 HTTP GET 請求"""
+    last_error = None
+
+    for attempt in range(max_retries):
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(url)
+                resp.raise_for_status()
+                return resp.json()
+        except (httpx.TimeoutException, httpx.HTTPStatusError, httpx.ConnectError) as e:
+            last_error = e
+            if attempt < max_retries - 1:
+                await asyncio.sleep(HTTP_RETRY_DELAY * (attempt + 1))  # 指數退避
+                logger.debug(f"HTTP 請求失敗，重試 {attempt + 2}/{max_retries}: {e}")
+        except Exception as e:
+            # 非網路錯誤不重試
+            logger.debug(f"HTTP 請求異常: {e}")
+            return None
+
+    if last_error:
+        logger.debug(f"HTTP 請求重試 {max_retries} 次後失敗: {last_error}")
+    return None
+
+
 async def _fetch_twse_quote(symbol: str) -> Optional[StockQuote]:
     """從 TWSE 取得上市股票報價"""
     try:
         url = f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_{symbol}.tw"
 
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(url)
-            data = resp.json()
-
-        if not data.get('msgArray'):
+        data = await _fetch_with_retry(url)
+        if not data or not data.get('msgArray'):
             return None
 
         info = data['msgArray'][0]
 
-        # 解析資料
-        price = float(info.get('z', 0) or info.get('y', 0))  # z=成交價, y=昨收
+        # 解析資料 (處理空字串和 None)
+        def safe_float(value, default=0.0):
+            """安全轉換浮點數，處理空字串和 None"""
+            if value is None or value == '' or value == '-':
+                return default
+            try:
+                return float(value)
+            except (ValueError, TypeError):
+                return default
+
+        price = safe_float(info.get('z')) or safe_float(info.get('y'))  # z=成交價, y=昨收
         if price == 0:
             return None
 
-        yesterday = float(info.get('y', 0))  # 昨收
+        yesterday = safe_float(info.get('y'))  # 昨收
         change = price - yesterday if yesterday else 0
         change_percent = (change / yesterday * 100) if yesterday else 0
 
@@ -105,10 +141,10 @@ async def _fetch_twse_quote(symbol: str) -> Optional[StockQuote]:
             price=price,
             change=round(change, 2),
             change_percent=round(change_percent, 2),
-            open=float(info.get('o', 0) or 0),
-            high=float(info.get('h', 0) or 0),
-            low=float(info.get('l', 0) or 0),
-            volume=int(float(info.get('v', 0) or 0)),  # 成交量 (張)
+            open=safe_float(info.get('o')),
+            high=safe_float(info.get('h')),
+            low=safe_float(info.get('l')),
+            volume=int(safe_float(info.get('v'))),  # 成交量 (張)
             timestamp=info.get('t', '')
         )
 
@@ -122,20 +158,26 @@ async def _fetch_tpex_quote(symbol: str) -> Optional[StockQuote]:
     try:
         url = f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=otc_{symbol}.tw"
 
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(url)
-            data = resp.json()
-
-        if not data.get('msgArray'):
+        data = await _fetch_with_retry(url)
+        if not data or not data.get('msgArray'):
             return None
 
         info = data['msgArray'][0]
 
-        price = float(info.get('z', 0) or info.get('y', 0))
+        # 安全轉換浮點數
+        def safe_float(value, default=0.0):
+            if value is None or value == '' or value == '-':
+                return default
+            try:
+                return float(value)
+            except (ValueError, TypeError):
+                return default
+
+        price = safe_float(info.get('z')) or safe_float(info.get('y'))
         if price == 0:
             return None
 
-        yesterday = float(info.get('y', 0))
+        yesterday = safe_float(info.get('y'))
         change = price - yesterday if yesterday else 0
         change_percent = (change / yesterday * 100) if yesterday else 0
 
@@ -145,10 +187,10 @@ async def _fetch_tpex_quote(symbol: str) -> Optional[StockQuote]:
             price=price,
             change=round(change, 2),
             change_percent=round(change_percent, 2),
-            open=float(info.get('o', 0) or 0),
-            high=float(info.get('h', 0) or 0),
-            low=float(info.get('l', 0) or 0),
-            volume=int(float(info.get('v', 0) or 0)),
+            open=safe_float(info.get('o')),
+            high=safe_float(info.get('h')),
+            low=safe_float(info.get('l')),
+            volume=int(safe_float(info.get('v'))),
             timestamp=info.get('t', '')
         )
 

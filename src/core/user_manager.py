@@ -123,6 +123,163 @@ class UserManager:
                     users.append(config)
         return users
 
+    # ========== PIN 碼與 API Key 操作 ==========
+
+    def set_pin_code(self, chat_id, pin_code: str) -> bool:
+        """
+        設定用戶 PIN 碼
+
+        Args:
+            chat_id: Telegram Chat ID
+            pin_code: PIN 碼 (4-6 位數字)
+
+        Returns:
+            bool: 是否設定成功
+        """
+        if not pin_code or not pin_code.isdigit() or len(pin_code) < 4 or len(pin_code) > 6:
+            return False
+
+        config = self.get_user_config(chat_id)
+        if config is None:
+            return False
+
+        config['pin_code'] = pin_code
+        config['pin_code_set_at'] = datetime.now().isoformat()
+        self._save_json(self._get_config_path(chat_id), config)
+        logger.info(f"用戶 {chat_id} 已設定 PIN 碼")
+        return True
+
+    def verify_pin_code(self, chat_id, pin_code: str) -> bool:
+        """
+        驗證用戶 PIN 碼
+
+        Args:
+            chat_id: Telegram Chat ID
+            pin_code: 要驗證的 PIN 碼
+
+        Returns:
+            bool: 是否正確
+        """
+        config = self.get_user_config(chat_id)
+        if config is None:
+            return False
+
+        stored_pin = config.get('pin_code')
+        if not stored_pin:
+            return False
+
+        return stored_pin == pin_code
+
+    def has_pin_code(self, chat_id) -> bool:
+        """檢查用戶是否已設定 PIN 碼"""
+        config = self.get_user_config(chat_id)
+        return config is not None and bool(config.get('pin_code'))
+
+    def generate_api_key(self, chat_id) -> str:
+        """
+        為用戶生成新的 API Key
+
+        Args:
+            chat_id: Telegram Chat ID
+
+        Returns:
+            str: 新的 API Key
+        """
+        import secrets
+
+        config = self.get_user_config(chat_id)
+        if config is None:
+            raise ValueError(f"用戶不存在: {chat_id}")
+
+        api_key = f"sk-{secrets.token_urlsafe(32)}"
+        config['api_key'] = api_key
+        config['api_key_created_at'] = datetime.now().isoformat()
+        self._save_json(self._get_config_path(chat_id), config)
+
+        logger.info(f"用戶 {chat_id} 已生成新的 API Key")
+        return api_key
+
+    def get_api_key(self, chat_id) -> Optional[str]:
+        """取得用戶的 API Key"""
+        config = self.get_user_config(chat_id)
+        if config is None:
+            return None
+        return config.get('api_key')
+
+    def get_user_by_api_key(self, api_key: str) -> Optional[str]:
+        """
+        透過 API Key 取得用戶 ID
+
+        Args:
+            api_key: API Key
+
+        Returns:
+            用戶的 chat_id 或 None
+        """
+        for user_dir in self.base_dir.iterdir():
+            if not user_dir.is_dir() or user_dir.name.startswith('.'):
+                continue
+
+            config = self.get_user_config(user_dir.name)
+            if config and config.get('api_key') == api_key:
+                return user_dir.name
+
+        return None
+
+    def get_allowed_chat_ids(self, chat_id) -> List[str]:
+        """
+        取得用戶的授權 Chat ID 列表
+
+        Args:
+            chat_id: 主用戶的 Chat ID
+
+        Returns:
+            授權的 Chat ID 列表
+        """
+        config = self.get_user_config(chat_id)
+        if config is None:
+            return []
+        return config.get('allowed_chat_ids', [])
+
+    def set_allowed_chat_ids(self, chat_id, allowed_ids: List[str]) -> bool:
+        """
+        設定用戶的授權 Chat ID 列表
+
+        Args:
+            chat_id: 主用戶的 Chat ID
+            allowed_ids: 授權的 Chat ID 列表
+
+        Returns:
+            bool: 是否設定成功
+        """
+        config = self.get_user_config(chat_id)
+        if config is None:
+            return False
+
+        config['allowed_chat_ids'] = allowed_ids
+        config['allowed_chat_ids_updated_at'] = datetime.now().isoformat()
+        self._save_json(self._get_config_path(chat_id), config)
+        logger.info(f"用戶 {chat_id} 已更新授權 Chat ID 列表")
+        return True
+
+    def is_chat_id_allowed(self, owner_chat_id, check_chat_id) -> bool:
+        """
+        檢查 Chat ID 是否被授權
+
+        Args:
+            owner_chat_id: 主用戶的 Chat ID
+            check_chat_id: 要檢查的 Chat ID
+
+        Returns:
+            bool: 是否被授權
+        """
+        # 主用戶永遠被授權
+        if str(owner_chat_id) == str(check_chat_id):
+            return True
+
+        allowed_ids = self.get_allowed_chat_ids(owner_chat_id)
+        return str(check_chat_id) in allowed_ids
+
     # ========== 券商設定操作 ==========
 
     def get_broker_config(self, chat_id, broker_name: str) -> Optional[Dict]:
@@ -533,6 +690,9 @@ class UserSetupState:
 
     # 操作確認
     WAITING_DELETE_CONFIRM = 'waiting_delete_confirm'
+
+    # 股價查詢
+    WAITING_QUOTE_SYMBOL = 'waiting_quote_symbol'
 
 
 class UserStateManager:

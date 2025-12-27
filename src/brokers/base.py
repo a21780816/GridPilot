@@ -115,6 +115,42 @@ class BaseBroker(ABC):
         """
         pass
 
+    def place_market_buy_order(self, symbol: str, quantity: int) -> OrderResult:
+        """
+        下市價買單
+
+        Args:
+            symbol: 股票代號
+            quantity: 買入數量（張）
+
+        Returns:
+            OrderResult: 下單結果
+
+        Note:
+            子類別必須覆寫此方法，使用券商的市價單 API 或漲停價模擬
+        """
+        raise NotImplementedError(
+            f"{self.broker_name} 尚未實作市價買單功能，請覆寫 place_market_buy_order 方法"
+        )
+
+    def place_market_sell_order(self, symbol: str, quantity: int) -> OrderResult:
+        """
+        下市價賣單
+
+        Args:
+            symbol: 股票代號
+            quantity: 賣出數量（張）
+
+        Returns:
+            OrderResult: 下單結果
+
+        Note:
+            子類別必須覆寫此方法，使用券商的市價單 API 或跌停價模擬
+        """
+        raise NotImplementedError(
+            f"{self.broker_name} 尚未實作市價賣單功能，請覆寫 place_market_sell_order 方法"
+        )
+
     @abstractmethod
     def get_position(self, symbol: str) -> Optional[Position]:
         """

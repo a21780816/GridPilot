@@ -1,10 +1,12 @@
 """
 Telegram Bot 主程式
 處理用戶互動、設定和指令
-支援多券商、多標的網格交易
+支援多券商、多標的網格交易、條件單
 """
 
 import logging
+from typing import Optional, TYPE_CHECKING
+
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -17,6 +19,10 @@ from telegram.ext import (
 
 from src.core.user_manager import UserManager, UserStateManager, UserSetupState
 from src.brokers import get_broker_list, SUPPORTED_BROKERS
+from src.telegram.handlers import TriggerHandlers, TriggerSetupState
+
+if TYPE_CHECKING:
+    from src.core.trigger_order_manager import TriggerOrderManager
 
 logger = logging.getLogger('TelegramBot')
 
@@ -24,7 +30,8 @@ logger = logging.getLogger('TelegramBot')
 class TradingBot:
     """Telegram 交易機器人"""
 
-    def __init__(self, token, user_manager, bot_manager=None):
+    def __init__(self, token, user_manager, bot_manager=None,
+                 trigger_manager: Optional['TriggerOrderManager'] = None):
         """
         初始化
 
@@ -32,12 +39,23 @@ class TradingBot:
             token: Telegram Bot Token
             user_manager: UserManager 實例
             bot_manager: BotManager 實例 (管理交易機器人)
+            trigger_manager: TriggerOrderManager 實例 (條件單管理)
         """
         self.token = token
         self.user_manager = user_manager
         self.bot_manager = bot_manager
+        self.trigger_manager = trigger_manager
         self.state_manager = UserStateManager()
         self.app = None
+
+        # 初始化條件單處理器
+        self.trigger_handlers: Optional[TriggerHandlers] = None
+        if trigger_manager:
+            self.trigger_handlers = TriggerHandlers(
+                trigger_manager=trigger_manager,
+                user_manager=user_manager,
+                state_manager=self.state_manager
+            )
 
     # ========== 基本指令 ==========
 
@@ -54,21 +72,40 @@ class TradingBot:
                 first_name=user.first_name
             )
 
-        welcome_msg = f"""
-<b>歡迎使用網格交易機器人！</b>
+        # 檢查設定狀態
+        has_broker = len(self.user_manager.get_broker_names(chat_id)) > 0
+        has_pin = self.user_manager.has_pin_code(chat_id)
+        has_api_key = self.user_manager.get_api_key(chat_id) is not None
 
-嗨 {user.first_name}，我是你的股票網格交易助手。
+        # 建立狀態顯示
+        broker_status = "✅ 已設定" if has_broker else "❌ 尚未設定"
+        pin_status = "✅ 已設定" if has_pin else "❌ 尚未設定"
+        apikey_status = "✅ 已產生" if has_api_key else "⚪ 尚未產生 (選用)"
+
+        # 決定下一步引導
+        if not has_broker:
+            next_step = "👉 請先使用 /broker 設定券商 API"
+        elif not has_pin:
+            next_step = "👉 請使用 /setpin 設定 PIN 碼"
+        else:
+            next_step = "✨ 設定完成！可以使用 /trigger 新增條件單"
+
+        welcome_msg = f"""
+<b>歡迎使用股票交易機器人！</b>
+
+嗨 {user.first_name}，我是你的股票交易助手。
+
+<b>設定狀態</b>
+• 券商設定：{broker_status}
+• PIN 碼：{pin_status}
+• API Key：{apikey_status}
+
+<b>{next_step}</b>
 
 <b>功能說明</b>
-- 自動網格交易 - 在設定的價格區間內自動買賣
-- 多券商支援 - 可同時設定多個券商帳號
-- 多標的交易 - 可同時運行多個股票的網格策略
-- 即時通知 - 下單、成交、停損停利即時推送
-
-<b>快速開始</b>
-1. /broker - 設定券商 API
-2. /grid - 新增網格策略
-3. /run - 啟動網格交易
+• 條件單交易 - 價格到達條件自動下單
+• 即時股價查詢 - /quote [股票代號]
+• REST API - 供 AI 自動化操作
 
 <b>所有指令</b>
 /help - 查看所有指令
@@ -83,10 +120,21 @@ class TradingBot:
 <b>基本指令</b>
 /start - 開始使用
 /help - 顯示此說明
+/cancel - 取消目前操作
 
 <b>券商管理</b>
 /broker - 新增/管理券商設定
 /brokers - 查看已設定的券商
+
+<b>條件單</b>
+/trigger - 新增條件單
+/triggers - 查看所有條件單
+/deltrigger [ID] - 刪除條件單
+/quote [股票代號] - 查詢即時股價
+
+<b>帳戶安全</b>
+/setpin - 設定/更新 PIN 碼
+/apikey - 查看/產生 API Key
 
 <b>網格管理</b>
 /grid - 新增網格策略
@@ -94,17 +142,78 @@ class TradingBot:
 /edit [股票代號] - 編輯網格設定
 /delete [股票代號] - 刪除網格設定
 
-<b>交易控制</b>
+<b>網格控制</b>
 /run [股票代號] - 啟動指定標的
 /stop [股票代號] - 停止指定標的
 /runall - 啟動所有網格
 /stopall - 停止所有網格
-
-<b>狀態查詢</b>
-/status - 查看所有運行中的網格狀態
-/status [股票代號] - 查看指定標的狀態
+/status [股票代號] - 查看狀態
         """
         await update.message.reply_text(help_msg.strip(), parse_mode='HTML')
+
+    async def cancel_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """處理 /cancel 指令 - 取消目前操作"""
+        chat_id = update.effective_chat.id
+        state = self.state_manager.get_state(chat_id)
+
+        if state == UserSetupState.IDLE:
+            await update.message.reply_text("目前沒有進行中的操作")
+        else:
+            self.state_manager.clear_state(chat_id)
+            await update.message.reply_text("已取消目前操作")
+
+    async def quote_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """處理 /quote 指令 - 查詢即時股價"""
+        chat_id = update.effective_chat.id
+
+        if not context.args:
+            # 顯示熱門股票選項
+            keyboard = [
+                [
+                    InlineKeyboardButton("2330 台積電", callback_data="quote_2330"),
+                    InlineKeyboardButton("2317 鴻海", callback_data="quote_2317"),
+                    InlineKeyboardButton("2454 聯發科", callback_data="quote_2454"),
+                ],
+                [
+                    InlineKeyboardButton("2881 富邦金", callback_data="quote_2881"),
+                    InlineKeyboardButton("2882 國泰金", callback_data="quote_2882"),
+                    InlineKeyboardButton("0050 元大50", callback_data="quote_0050"),
+                ],
+                [
+                    InlineKeyboardButton("2603 長榮", callback_data="quote_2603"),
+                    InlineKeyboardButton("2002 中鋼", callback_data="quote_2002"),
+                    InlineKeyboardButton("2412 中華電", callback_data="quote_2412"),
+                ],
+                [InlineKeyboardButton("取消", callback_data="cancel")]
+            ]
+
+            await update.message.reply_text(
+                "<b>查詢即時股價</b>\n\n"
+                "選擇熱門股票，或直接輸入股票代號：",
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            self.state_manager.set_state(chat_id, UserSetupState.WAITING_QUOTE_SYMBOL)
+            return
+
+        symbol = context.args[0].upper()
+        await self._show_stock_quote(update.message, symbol)
+
+    async def _show_stock_quote(self, message, symbol: str):
+        """顯示股票報價"""
+        try:
+            from src.core.stock_info import get_stock_quote, format_price_info
+            quote = await get_stock_quote(symbol)
+
+            if quote:
+                msg = format_price_info(quote)
+                await message.reply_text(msg, parse_mode='HTML')
+            else:
+                await message.reply_text(f"找不到 {symbol} 的報價資訊")
+
+        except Exception as e:
+            logger.error(f"查詢股價失敗: {e}")
+            await message.reply_text(f"查詢失敗: {e}")
 
     # ========== 券商管理 ==========
 
@@ -469,14 +578,29 @@ class TradingBot:
     async def handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """處理按鈕回調"""
         query = update.callback_query
+        data = query.data
+
+        # 先讓條件單處理器處理
+        if self.trigger_handlers:
+            handled = await self.trigger_handlers.handle_callback(update, context)
+            if handled:
+                return
+
         await query.answer()
 
         chat_id = query.message.chat_id
-        data = query.data
 
         if data == "cancel":
             self.state_manager.clear_state(chat_id)
             await query.edit_message_text("已取消")
+            return
+
+        # 股價查詢
+        if data.startswith("quote_"):
+            symbol = data.replace("quote_", "")
+            self.state_manager.clear_state(chat_id)
+            await query.edit_message_text(f"查詢 {symbol} 中...")
+            await self._show_stock_quote(query.message, symbol)
             return
 
         # 新增券商
@@ -590,11 +714,24 @@ class TradingBot:
         text = update.message.text.strip()
         state = self.state_manager.get_state(chat_id)
 
+        # 先讓條件單處理器處理
+        if self.trigger_handlers:
+            handled = await self.trigger_handlers.handle_message(update, context)
+            if handled:
+                return
+
         if state == UserSetupState.IDLE:
             await update.message.reply_text(
                 "請使用指令與我互動\n"
                 "輸入 /help 查看所有指令"
             )
+            return
+
+        # ===== 股價查詢 =====
+        if state == UserSetupState.WAITING_QUOTE_SYMBOL:
+            symbol = text.upper()
+            self.state_manager.clear_state(chat_id)
+            await self._show_stock_quote(update.message, symbol)
             return
 
         # ===== 券商設定流程 =====
@@ -903,6 +1040,8 @@ class TradingBot:
         # 註冊指令處理器
         self.app.add_handler(CommandHandler("start", self.start))
         self.app.add_handler(CommandHandler("help", self.help_command))
+        self.app.add_handler(CommandHandler("cancel", self.cancel_command))
+        self.app.add_handler(CommandHandler("quote", self.quote_command))
 
         # 券商管理
         self.app.add_handler(CommandHandler("broker", self.broker_command))
@@ -921,6 +1060,14 @@ class TradingBot:
 
         # 狀態查詢
         self.app.add_handler(CommandHandler("status", self.status_command))
+
+        # 條件單指令 (如果有啟用)
+        if self.trigger_handlers:
+            self.app.add_handler(CommandHandler("trigger", self.trigger_handlers.trigger_command))
+            self.app.add_handler(CommandHandler("triggers", self.trigger_handlers.triggers_command))
+            self.app.add_handler(CommandHandler("deltrigger", self.trigger_handlers.delete_trigger_command))
+            self.app.add_handler(CommandHandler("setpin", self.trigger_handlers.setpin_command))
+            self.app.add_handler(CommandHandler("apikey", self.trigger_handlers.apikey_command))
 
         # 回調處理器
         self.app.add_handler(CallbackQueryHandler(self.handle_callback))

@@ -26,6 +26,9 @@ class TelegramNotifier:
         self.base_url = f"https://api.telegram.org/bot{bot_token}"
         self.logger = logging.getLogger('TelegramNotifier')
 
+    # Telegram 訊息長度上限
+    MAX_MESSAGE_LENGTH = 4096
+
     def send_message(self, message, parse_mode='HTML'):
         """
         發送訊息到 Telegram
@@ -39,6 +42,13 @@ class TelegramNotifier:
         """
         if not self.enabled:
             return True
+
+        # 檢查並截斷過長訊息
+        if len(message) > self.MAX_MESSAGE_LENGTH:
+            truncated_suffix = "\n\n... (訊息過長已截斷)"
+            max_content_len = self.MAX_MESSAGE_LENGTH - len(truncated_suffix)
+            message = message[:max_content_len] + truncated_suffix
+            self.logger.warning(f"訊息長度超過 {self.MAX_MESSAGE_LENGTH}，已截斷")
 
         try:
             url = f"{self.base_url}/sendMessage"
@@ -258,6 +268,92 @@ class TelegramNotifier:
         message = f"""
 ❌ <b>發生錯誤</b>
 
+{error_msg}
+
+⏰ {datetime.now().strftime('%H:%M:%S')}
+        """
+        return self.send_message(message.strip())
+
+    def send_trigger_activated_message(self, symbol, condition, trigger_price, current_price,
+                                       action, order_type, quantity):
+        """
+        發送條件單觸發通知
+
+        Args:
+            symbol: 股票代號
+            condition: 觸發條件 (>=, <=)
+            trigger_price: 觸發價格
+            current_price: 當前價格
+            action: 買/賣
+            order_type: 訂單類型 (市價/限價)
+            quantity: 張數
+        """
+        action_text = "買入" if action == "buy" else "賣出"
+        order_text = "市價單" if order_type == "market" else "限價單"
+
+        message = f"""
+🎯 <b>條件單已觸發！</b>
+
+<b>觸發條件</b>
+• 股票: <code>{symbol}</code>
+• 條件: 價格 {condition} {trigger_price}
+• 當前價格: {current_price}
+
+<b>執行動作</b>
+• 方向: {action_text}
+• 類型: {order_text}
+• 數量: {quantity} 張
+
+⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+        """
+        return self.send_message(message.strip())
+
+    def send_trigger_executed_message(self, symbol, action, quantity, order_no, price=None):
+        """
+        發送條件單執行成功通知
+
+        Args:
+            symbol: 股票代號
+            action: 買/賣
+            quantity: 張數
+            order_no: 委託序號
+            price: 委託價格 (限價單)
+        """
+        action_text = "買入" if action == "buy" else "賣出"
+        price_text = f"\n• 委託價格: {price}" if price else ""
+
+        message = f"""
+✅ <b>條件單執行成功</b>
+
+• 股票: <code>{symbol}</code>
+• 方向: {action_text}
+• 數量: {quantity} 張{price_text}
+• 委託序號: <code>{order_no}</code>
+
+⏰ {datetime.now().strftime('%H:%M:%S')}
+        """
+        return self.send_message(message.strip())
+
+    def send_trigger_failed_message(self, symbol, action, quantity, error_msg):
+        """
+        發送條件單執行失敗通知
+
+        Args:
+            symbol: 股票代號
+            action: 買/賣
+            quantity: 張數
+            error_msg: 錯誤訊息
+        """
+        action_text = "買入" if action == "buy" else "賣出"
+
+        message = f"""
+❌ <b>條件單執行失敗</b>
+
+• 股票: <code>{symbol}</code>
+• 方向: {action_text}
+• 數量: {quantity} 張
+
+<b>失敗原因:</b>
 {error_msg}
 
 ⏰ {datetime.now().strftime('%H:%M:%S')}

@@ -156,6 +156,72 @@ class EsunBroker(BaseBroker):
             logger.error(f"下賣單失敗: {e}")
             return OrderResult(success=False, message=str(e))
 
+    def place_market_buy_order(self, symbol: str, quantity: int) -> OrderResult:
+        """下市價買單 (使用漲停價)"""
+        if not self._logged_in:
+            return OrderResult(success=False, message="未登入")
+
+        try:
+            from esun_trade.order import OrderObject
+            from esun_trade.constant import APCode, Trade, PriceFlag, BSFlag, Action
+
+            order = OrderObject(
+                stock_no=symbol,
+                buy_sell=Action.Buy,
+                quantity=quantity,
+                price=None,  # 市價單不需指定價格
+                price_flag=PriceFlag.LimitUp,  # 漲停價買入
+                ap_code=APCode.Common,
+                bs_flag=BSFlag.ROD,
+                trade=Trade.Cash
+            )
+
+            result = self.trade_sdk.place_order(order)
+            order_no = result.get('ord_no')
+
+            if order_no:
+                logger.info(f"市價買單已送出: {symbol}, 數量: {quantity} 張")
+                return OrderResult(success=True, order_no=order_no)
+            else:
+                return OrderResult(success=False, message=str(result))
+
+        except Exception as e:
+            logger.error(f"下市價買單失敗: {e}")
+            return OrderResult(success=False, message=str(e))
+
+    def place_market_sell_order(self, symbol: str, quantity: int) -> OrderResult:
+        """下市價賣單 (使用跌停價)"""
+        if not self._logged_in:
+            return OrderResult(success=False, message="未登入")
+
+        try:
+            from esun_trade.order import OrderObject
+            from esun_trade.constant import APCode, Trade, PriceFlag, BSFlag, Action
+
+            order = OrderObject(
+                stock_no=symbol,
+                buy_sell=Action.Sell,
+                quantity=quantity,
+                price=None,  # 市價單不需指定價格
+                price_flag=PriceFlag.LimitDown,  # 跌停價賣出
+                ap_code=APCode.Common,
+                bs_flag=BSFlag.ROD,
+                trade=Trade.Cash
+            )
+
+            result = self.trade_sdk.place_order(order)
+            order_no = result.get('ord_no')
+
+            if order_no:
+                logger.info(f"市價賣單已送出: {symbol}, 數量: {quantity} 張")
+                return OrderResult(success=True, order_no=order_no)
+            else:
+                return OrderResult(success=False, message=str(result))
+
+        except Exception as e:
+            logger.error(f"下市價賣單失敗: {e}")
+            return OrderResult(success=False, message=str(e))
+
     def get_position(self, symbol: str) -> Optional[Position]:
         """取得持倉"""
         if not self._logged_in:
