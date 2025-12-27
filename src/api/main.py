@@ -9,7 +9,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .middleware.auth import APIKeyMiddleware
-from .routes import health_router, trigger_orders_router, users_router
+from .routes import health_router, trigger_orders_router, stocks_router, users_router, portfolio_router
 
 if TYPE_CHECKING:
     from src.core.user_manager import UserManager
@@ -58,6 +58,7 @@ API Key 可透過 Telegram Bot 的 `/apikey` 指令取得。
 - 建立/查詢/更新/刪除條件單
 - 查詢股票即時報價
 - 用戶資訊管理
+- 持倉/餘額/委託/成交紀錄查詢
         """,
         version="1.0.0",
         docs_url="/docs" if debug else "/docs",
@@ -95,7 +96,9 @@ API Key 可透過 Telegram Bot 的 `/apikey` 指令取得。
     # 註冊路由
     app.include_router(health_router)
     app.include_router(trigger_orders_router)
+    app.include_router(stocks_router)
     app.include_router(users_router)
+    app.include_router(portfolio_router)
 
     @app.get("/", tags=["Root"])
     async def root():

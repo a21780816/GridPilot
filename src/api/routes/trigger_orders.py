@@ -16,6 +16,9 @@ from ..models.responses import (
     TriggerOrderResponse,
     TriggerOrderListResponse,
     StockQuoteResponse,
+    StockFundamentalResponse,
+    InstitutionalInvestorResponse,
+    StockDetailResponse,
     SuccessResponse
 )
 from src.models.enums import TriggerStatus
@@ -311,12 +314,14 @@ async def delete_trigger_order(
         )
 
 
-# 股價查詢
-@router.get("/stocks/{symbol}/quote", response_model=StockQuoteResponse)
+# 股價查詢路由 - 放在 triggers 外避免路徑衝突
+stocks_router = APIRouter(prefix="/api/v1/stocks", tags=["Stocks"])
+
+
+@stocks_router.get("/{symbol}/quote", response_model=StockQuoteResponse)
 async def get_stock_quote(
     symbol: str,
-    user_id: str = Depends(get_authenticated_user),
-    user_manager=Depends(get_user_manager)
+    user_id: str = Depends(get_authenticated_user)
 ):
     """
     取得股票即時報價
@@ -341,16 +346,25 @@ async def get_stock_quote(
             )
 
         return StockQuoteResponse(
-            symbol=symbol,
-            name=quote.get('name'),
-            price=quote.get('closePrice', 0),
-            change=quote.get('change'),
-            change_percent=quote.get('changePercent'),
-            open=quote.get('openPrice'),
-            high=quote.get('highPrice'),
-            low=quote.get('lowPrice'),
-            volume=quote.get('totalVolume'),
-            timestamp=quote.get('lastUpdated')
+            symbol=quote.symbol,
+            name=quote.name,
+            price=quote.price,
+            change=quote.change,
+            change_percent=quote.change_percent,
+            open=quote.open,
+            high=quote.high,
+            low=quote.low,
+            close=quote.close,
+            yesterday=quote.yesterday,
+            volume=quote.volume,
+            amount=quote.amount,
+            bid_price=quote.bid_price,
+            ask_price=quote.ask_price,
+            limit_up=quote.limit_up,
+            limit_down=quote.limit_down,
+            amplitude=quote.amplitude,
+            timestamp=quote.timestamp,
+            market=quote.market
         )
 
     except HTTPException:
@@ -359,4 +373,201 @@ async def get_stock_quote(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"查詢股價失敗: {str(e)}"
+        )
+
+
+@stocks_router.get("/{symbol}/detail", response_model=StockDetailResponse)
+async def get_stock_detail_info(
+    symbol: str,
+    user_id: str = Depends(get_authenticated_user)
+):
+    """
+    取得股票完整資訊 (報價 + 基本面 + 法人買賣超)
+
+    Args:
+        symbol: 股票代號
+
+    Returns:
+        StockDetailResponse: 股票完整資訊
+    """
+    from src.core.stock_info import get_stock_detail as fetch_detail
+
+    symbol = symbol.upper()
+
+    try:
+        detail = await fetch_detail(symbol)
+
+        if not detail:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"找不到股票: {symbol}"
+            )
+
+        # 轉換報價
+        quote_resp = StockQuoteResponse(
+            symbol=detail.quote.symbol,
+            name=detail.quote.name,
+            price=detail.quote.price,
+            change=detail.quote.change,
+            change_percent=detail.quote.change_percent,
+            open=detail.quote.open,
+            high=detail.quote.high,
+            low=detail.quote.low,
+            close=detail.quote.close,
+            yesterday=detail.quote.yesterday,
+            volume=detail.quote.volume,
+            amount=detail.quote.amount,
+            bid_price=detail.quote.bid_price,
+            ask_price=detail.quote.ask_price,
+            limit_up=detail.quote.limit_up,
+            limit_down=detail.quote.limit_down,
+            amplitude=detail.quote.amplitude,
+            timestamp=detail.quote.timestamp,
+            market=detail.quote.market
+        )
+
+        # 轉換基本面
+        fundamental_resp = None
+        if detail.fundamental:
+            f = detail.fundamental
+            fundamental_resp = StockFundamentalResponse(
+                symbol=f.symbol,
+                name=f.name or None,
+                pe_ratio=f.pe_ratio or None,
+                pb_ratio=f.pb_ratio or None,
+                dividend_yield=f.dividend_yield or None,
+                eps=f.eps or None,
+                market_cap=f.market_cap or None,
+                shares_outstanding=f.shares_outstanding or None
+            )
+
+        # 轉換法人買賣超
+        institutional_resp = None
+        if detail.institutional:
+            i = detail.institutional
+            institutional_resp = InstitutionalInvestorResponse(
+                symbol=i.symbol,
+                date=i.date or None,
+                foreign_buy=i.foreign_buy or None,
+                foreign_sell=i.foreign_sell or None,
+                foreign_net=i.foreign_net,
+                investment_trust_buy=i.investment_trust_buy or None,
+                investment_trust_sell=i.investment_trust_sell or None,
+                investment_trust_net=i.investment_trust_net,
+                dealer_buy=i.dealer_buy or None,
+                dealer_sell=i.dealer_sell or None,
+                dealer_net=i.dealer_net,
+                total_net=i.total_net
+            )
+
+        return StockDetailResponse(
+            quote=quote_resp,
+            fundamental=fundamental_resp,
+            institutional=institutional_resp
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"查詢股票資訊失敗: {str(e)}"
+        )
+
+
+@stocks_router.get("/{symbol}/fundamental", response_model=StockFundamentalResponse)
+async def get_stock_fundamental_info(
+    symbol: str,
+    user_id: str = Depends(get_authenticated_user)
+):
+    """
+    取得股票基本面資訊 (本益比、殖利率等)
+
+    Args:
+        symbol: 股票代號
+
+    Returns:
+        StockFundamentalResponse: 基本面資訊
+    """
+    from src.core.stock_info import get_stock_fundamental as fetch_fundamental
+
+    symbol = symbol.upper()
+
+    try:
+        fundamental = await fetch_fundamental(symbol)
+
+        if not fundamental:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"找不到股票基本面資料: {symbol}"
+            )
+
+        return StockFundamentalResponse(
+            symbol=fundamental.symbol,
+            name=fundamental.name or None,
+            pe_ratio=fundamental.pe_ratio or None,
+            pb_ratio=fundamental.pb_ratio or None,
+            dividend_yield=fundamental.dividend_yield or None,
+            eps=fundamental.eps or None,
+            market_cap=fundamental.market_cap or None,
+            shares_outstanding=fundamental.shares_outstanding or None
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"查詢基本面失敗: {str(e)}"
+        )
+
+
+@stocks_router.get("/{symbol}/institutional", response_model=InstitutionalInvestorResponse)
+async def get_stock_institutional_info(
+    symbol: str,
+    user_id: str = Depends(get_authenticated_user)
+):
+    """
+    取得股票法人買賣超資訊
+
+    Args:
+        symbol: 股票代號
+
+    Returns:
+        InstitutionalInvestorResponse: 法人買賣超資訊
+    """
+    from src.core.stock_info import get_institutional_investor as fetch_institutional
+
+    symbol = symbol.upper()
+
+    try:
+        institutional = await fetch_institutional(symbol)
+
+        if not institutional:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"找不到法人買賣超資料: {symbol}"
+            )
+
+        return InstitutionalInvestorResponse(
+            symbol=institutional.symbol,
+            date=institutional.date or None,
+            foreign_buy=institutional.foreign_buy or None,
+            foreign_sell=institutional.foreign_sell or None,
+            foreign_net=institutional.foreign_net,
+            investment_trust_buy=institutional.investment_trust_buy or None,
+            investment_trust_sell=institutional.investment_trust_sell or None,
+            investment_trust_net=institutional.investment_trust_net,
+            dealer_buy=institutional.dealer_buy or None,
+            dealer_sell=institutional.dealer_sell or None,
+            dealer_net=institutional.dealer_net,
+            total_net=institutional.total_net
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"查詢法人買賣超失敗: {str(e)}"
         )

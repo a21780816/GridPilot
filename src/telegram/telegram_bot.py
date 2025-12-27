@@ -19,7 +19,7 @@ from telegram.ext import (
 
 from src.core.user_manager import UserManager, UserStateManager, UserSetupState
 from src.brokers import get_broker_list, SUPPORTED_BROKERS
-from src.telegram.handlers import TriggerHandlers, TriggerSetupState
+from src.telegram.handlers import TriggerHandlers, TriggerSetupState, PortfolioHandlers
 
 if TYPE_CHECKING:
     from src.core.trigger_order_manager import TriggerOrderManager
@@ -57,22 +57,28 @@ class TradingBot:
                 state_manager=self.state_manager
             )
 
+        # 初始化持股查詢處理器
+        self.portfolio_handlers = PortfolioHandlers(user_manager=user_manager)
+
     # ========== 主選單 ==========
 
     def _get_main_menu_keyboard(self) -> InlineKeyboardMarkup:
         """取得主選單鍵盤"""
         keyboard = [
             [
+                InlineKeyboardButton("📊 我的持股", callback_data="menu_portfolio"),
+                InlineKeyboardButton("💰 查詢股價", callback_data="menu_quote"),
+            ],
+            [
                 InlineKeyboardButton("📝 新增條件單", callback_data="menu_trigger"),
                 InlineKeyboardButton("📋 條件單列表", callback_data="menu_triggers"),
             ],
             [
-                InlineKeyboardButton("💰 查詢股價", callback_data="menu_quote"),
                 InlineKeyboardButton("🔧 券商設定", callback_data="menu_broker"),
+                InlineKeyboardButton("🔐 API Key", callback_data="menu_apikey"),
             ],
             [
                 InlineKeyboardButton("🔑 設定PIN碼", callback_data="menu_setpin"),
-                InlineKeyboardButton("🔐 API Key", callback_data="menu_apikey"),
             ],
         ]
         return InlineKeyboardMarkup(keyboard)
@@ -161,6 +167,12 @@ class TradingBot:
 <b>券商管理</b>
 /broker - 新增/管理券商設定
 /brokers - 查看已設定的券商
+
+<b>持股查詢</b>
+/holdings - 查詢持股
+/balance - 查詢帳戶餘額
+/orders - 查詢今日委託
+/trades - 查詢今日成交
 
 <b>條件單</b>
 /trigger - 新增條件單
@@ -251,31 +263,51 @@ class TradingBot:
         symbol = context.args[0].upper()
         await self._show_stock_quote(update.message, symbol)
 
-    async def _show_stock_quote(self, message, symbol: str):
+    async def _show_stock_quote(self, message, symbol: str, detailed: bool = False, edit: bool = False):
         """顯示股票報價"""
         try:
-            from src.core.stock_info import get_stock_quote, format_price_info
-            quote = await get_stock_quote(symbol)
+            from src.core.stock_info import (
+                get_stock_quote, get_stock_detail,
+                format_price_info, format_stock_detail
+            )
 
-            if quote:
-                msg = format_price_info(quote)
-                await message.reply_text(
-                    msg,
-                    parse_mode='HTML',
-                    reply_markup=self._get_back_to_menu_keyboard()
-                )
+            if detailed:
+                # 詳細模式：包含基本面和法人資料
+                detail = await get_stock_detail(symbol)
+                if detail:
+                    msg = format_stock_detail(detail)
+                    keyboard = InlineKeyboardMarkup([
+                        [InlineKeyboardButton("📊 簡易模式", callback_data=f"quote_simple_{symbol}")],
+                        [InlineKeyboardButton("↩️ 返回主選單", callback_data="menu_main")]
+                    ])
+                else:
+                    msg = f"找不到 {symbol} 的報價資訊"
+                    keyboard = self._get_back_to_menu_keyboard()
             else:
-                await message.reply_text(
-                    f"找不到 {symbol} 的報價資訊",
-                    reply_markup=self._get_back_to_menu_keyboard()
-                )
+                # 簡易模式
+                quote = await get_stock_quote(symbol)
+                if quote:
+                    msg = format_price_info(quote, detailed=True)
+                    keyboard = InlineKeyboardMarkup([
+                        [InlineKeyboardButton("📈 法人/基本面", callback_data=f"quote_detail_{symbol}")],
+                        [InlineKeyboardButton("↩️ 返回主選單", callback_data="menu_main")]
+                    ])
+                else:
+                    msg = f"找不到 {symbol} 的報價資訊"
+                    keyboard = self._get_back_to_menu_keyboard()
+
+            if edit:
+                await message.edit_text(msg, parse_mode='HTML', reply_markup=keyboard)
+            else:
+                await message.reply_text(msg, parse_mode='HTML', reply_markup=keyboard)
 
         except Exception as e:
             logger.error(f"查詢股價失敗: {e}")
-            await message.reply_text(
-                f"查詢失敗: {e}",
-                reply_markup=self._get_back_to_menu_keyboard()
-            )
+            error_msg = f"查詢失敗: {e}"
+            if edit:
+                await message.edit_text(error_msg, reply_markup=self._get_back_to_menu_keyboard())
+            else:
+                await message.reply_text(error_msg, reply_markup=self._get_back_to_menu_keyboard())
 
     # ========== 券商管理 ==========
 
@@ -648,6 +680,12 @@ class TradingBot:
             if handled:
                 return
 
+        # 讓持股處理器處理
+        if self.portfolio_handlers:
+            handled = await self.portfolio_handlers.handle_callback(update, context)
+            if handled:
+                return
+
         await query.answer()
 
         chat_id = query.message.chat_id
@@ -664,6 +702,14 @@ class TradingBot:
         if data == "menu_main":
             self.state_manager.clear_state(chat_id)
             await self._show_main_menu(query.message, edit=True)
+            return
+
+        if data == "menu_portfolio":
+            # 我的持股
+            if self.portfolio_handlers:
+                await self.portfolio_handlers.show_portfolio_summary(query, context)
+            else:
+                await query.edit_message_text("持股查詢功能未啟用")
             return
 
         if data == "menu_trigger":
@@ -766,12 +812,27 @@ class TradingBot:
                 await query.edit_message_text("API Key 功能未啟用")
             return
 
-        # 股價查詢
+        # 股價查詢 - 詳細模式
+        if data.startswith("quote_detail_"):
+            symbol = data.replace("quote_detail_", "")
+            self.state_manager.clear_state(chat_id)
+            await query.edit_message_text(f"查詢 {symbol} 詳細資訊中...")
+            await self._show_stock_quote(query.message, symbol, detailed=True, edit=True)
+            return
+
+        # 股價查詢 - 簡易模式
+        if data.startswith("quote_simple_"):
+            symbol = data.replace("quote_simple_", "")
+            self.state_manager.clear_state(chat_id)
+            await self._show_stock_quote(query.message, symbol, detailed=False, edit=True)
+            return
+
+        # 股價查詢 - 熱門股票
         if data.startswith("quote_"):
             symbol = data.replace("quote_", "")
             self.state_manager.clear_state(chat_id)
             await query.edit_message_text(f"查詢 {symbol} 中...")
-            await self._show_stock_quote(query.message, symbol)
+            await self._show_stock_quote(query.message, symbol, detailed=False, edit=True)
             return
 
         # 新增券商
@@ -1240,6 +1301,13 @@ class TradingBot:
             self.app.add_handler(CommandHandler("deltrigger", self.trigger_handlers.delete_trigger_command))
             self.app.add_handler(CommandHandler("setpin", self.trigger_handlers.setpin_command))
             self.app.add_handler(CommandHandler("apikey", self.trigger_handlers.apikey_command))
+
+        # 持股查詢指令
+        if self.portfolio_handlers:
+            self.app.add_handler(CommandHandler("holdings", self.portfolio_handlers.holdings_command))
+            self.app.add_handler(CommandHandler("balance", self.portfolio_handlers.balance_command))
+            self.app.add_handler(CommandHandler("orders", self.portfolio_handlers.orders_command))
+            self.app.add_handler(CommandHandler("trades", self.portfolio_handlers.trades_command))
 
         # 回調處理器
         self.app.add_handler(CallbackQueryHandler(self.handle_callback))

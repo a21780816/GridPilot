@@ -7,7 +7,7 @@ from typing import Dict, List, Optional
 from configparser import ConfigParser
 from pathlib import Path
 
-from .base import BaseBroker, OrderResult, Position, OrderInfo
+from .base import BaseBroker, OrderResult, Position, OrderInfo, AccountBalance, Transaction, Settlement
 
 logger = logging.getLogger('EsunBroker')
 
@@ -315,6 +315,136 @@ class EsunBroker(BaseBroker):
 
         except Exception as e:
             logger.error(f"取得訂單列表失敗: {e}")
+            return []
+
+    def get_all_positions(self) -> List[Position]:
+        """取得所有持倉"""
+        if not self._logged_in:
+            return []
+
+        try:
+            inventories = self.trade_sdk.get_inventories()
+            result = []
+
+            for item in inventories:
+                symbol = item.get('stock_no', '')
+                quantity = item.get('qty', 0) // 1000  # 股數轉張數
+                avg_price = float(item.get('avg_price', 0))
+                current_price = float(item.get('last_price', 0))
+
+                # 計算市值與損益
+                cost_value = quantity * avg_price * 1000
+                market_value = quantity * current_price * 1000
+                unrealized_pnl = market_value - cost_value
+                unrealized_pnl_percent = (unrealized_pnl / cost_value * 100) if cost_value > 0 else 0
+                today_pnl = float(item.get('today_pnl', 0))
+
+                result.append(Position(
+                    symbol=symbol,
+                    symbol_name=item.get('stock_name', ''),
+                    quantity=quantity,
+                    avg_price=avg_price,
+                    current_price=current_price,
+                    unrealized_pnl=unrealized_pnl,
+                    unrealized_pnl_percent=round(unrealized_pnl_percent, 2),
+                    market_value=market_value,
+                    cost_value=cost_value,
+                    today_pnl=today_pnl
+                ))
+
+            return result
+
+        except Exception as e:
+            logger.error(f"取得所有持倉失敗: {e}")
+            return []
+
+    def get_balance(self) -> Optional[AccountBalance]:
+        """取得帳戶餘額"""
+        if not self._logged_in:
+            return None
+
+        try:
+            balance = self.trade_sdk.get_balance()
+            return AccountBalance(
+                available_balance=float(balance.get('available_balance', 0)),
+                total_balance=float(balance.get('total_balance', 0)),
+                settled_balance=float(balance.get('settled_balance', 0)),
+                unsettled_amount=float(balance.get('unsettled_amount', 0)),
+                margin_available=float(balance.get('margin_available', 0)),
+                short_available=float(balance.get('short_available', 0)),
+                currency="TWD"
+            )
+
+        except Exception as e:
+            logger.error(f"取得帳戶餘額失敗: {e}")
+            return None
+
+    def get_transactions(self, start_date: Optional[str] = None, end_date: Optional[str] = None) -> List[Transaction]:
+        """取得成交紀錄"""
+        if not self._logged_in:
+            return []
+
+        try:
+            from datetime import datetime
+
+            # 預設查詢今日
+            if start_date and end_date:
+                transactions = self.trade_sdk.get_transactions_by_date(start_date, end_date)
+            else:
+                transactions = self.trade_sdk.get_transactions()
+
+            result = []
+            for item in transactions:
+                trade_time = None
+                time_str = item.get('trade_time')
+                if time_str:
+                    try:
+                        trade_time = datetime.strptime(time_str, '%Y-%m-%d %H:%M:%S')
+                    except ValueError:
+                        pass
+
+                result.append(Transaction(
+                    trade_no=item.get('trade_no', ''),
+                    order_no=item.get('ord_no', ''),
+                    symbol=item.get('stock_no', ''),
+                    symbol_name=item.get('stock_name', ''),
+                    side='buy' if item.get('buy_sell') == 'B' else 'sell',
+                    price=float(item.get('price', 0)),
+                    quantity=item.get('qty', 0) // 1000,  # 股數轉張數
+                    amount=float(item.get('amount', 0)),
+                    fee=float(item.get('fee', 0)),
+                    tax=float(item.get('tax', 0)),
+                    net_amount=float(item.get('net_amount', 0)),
+                    trade_time=trade_time,
+                    trade_type=item.get('trade_type', 'cash')
+                ))
+
+            return result
+
+        except Exception as e:
+            logger.error(f"取得成交紀錄失敗: {e}")
+            return []
+
+    def get_settlements(self) -> List[Settlement]:
+        """取得交割資訊"""
+        if not self._logged_in:
+            return []
+
+        try:
+            settlements = self.trade_sdk.get_settlements()
+            result = []
+
+            for item in settlements:
+                result.append(Settlement(
+                    date=item.get('date', ''),
+                    amount=float(item.get('amount', 0)),
+                    status=item.get('status', '')
+                ))
+
+            return result
+
+        except Exception as e:
+            logger.error(f"取得交割資訊失敗: {e}")
             return []
 
     @staticmethod
