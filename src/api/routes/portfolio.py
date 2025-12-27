@@ -5,6 +5,8 @@
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
+from src.brokers import get_broker as create_broker
+
 from ..dependencies import (
     get_user_manager,
     get_authenticated_user,
@@ -38,7 +40,23 @@ def _get_broker(user_id: str, user_manager, broker_name: Optional[str] = None):
             detail="請先在 Telegram 使用 /broker 設定券商"
         )
 
-    broker = user_manager.get_broker(user_id, broker_name)
+    # 取得券商設定
+    broker_config = user_manager.get_broker_config(user_id, broker_name)
+    if not broker_config:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"找不到券商設定: {broker_name}"
+        )
+
+    # 建立券商實例
+    try:
+        broker = create_broker(broker_name, broker_config)
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"無法連接券商 {broker_name}: {str(e)}"
+        )
+
     if not broker:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

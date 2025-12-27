@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING, Optional
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
+from src.brokers import get_broker
+
 if TYPE_CHECKING:
     from src.core.user_manager import UserManager
 
@@ -62,7 +64,17 @@ class PortfolioHandlers:
         if not broker_name:
             return None
 
-        return self.user_manager.get_broker(chat_id, broker_name)
+        # 取得券商設定
+        broker_config = self.user_manager.get_broker_config(chat_id, broker_name)
+        if not broker_config:
+            return None
+
+        # 建立券商實例
+        try:
+            return get_broker(broker_name, broker_config)
+        except Exception as e:
+            logger.error(f"建立券商實例失敗: {e}")
+            return None
 
     # ========== 指令處理 ==========
 
