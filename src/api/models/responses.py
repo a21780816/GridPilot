@@ -93,7 +93,7 @@ class StockQuoteResponse(BaseModel):
                 "limit_up": 654.0,
                 "limit_down": 536.0,
                 "amplitude": 1.34,
-                "timestamp": "13:30:00",
+                "timestamp": "2025/01/27 13:30:00",
                 "market": "tse"
             }
         }

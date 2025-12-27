@@ -174,6 +174,8 @@ def _parse_best_price(price_str: str) -> float:
 async def _fetch_twse_quote(symbol: str) -> Optional[StockQuote]:
     """從 TWSE 取得上市股票報價"""
     try:
+        from datetime import datetime
+
         url = f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_{symbol}.tw"
 
         data = await _fetch_with_retry(url)
@@ -186,7 +188,7 @@ async def _fetch_twse_quote(symbol: str) -> Optional[StockQuote]:
         # z: 成交價, y: 昨收, o: 開盤, h: 最高, l: 最低
         # v: 成交量(張), tv: 成交量(股), a: 最佳五檔賣價, b: 最佳五檔買價
         # u: 漲停價, w: 跌停價, t: 時間, n: 股票名稱
-        # tlong: 時間戳記
+        # tlong: 時間戳記, d: 日期
 
         price = _safe_float(info.get('z')) or _safe_float(info.get('y'))
         if price == 0:
@@ -203,6 +205,18 @@ async def _fetch_twse_quote(symbol: str) -> Optional[StockQuote]:
         # 成交金額 (估算: 價格 * 成交量 * 1000)
         volume = int(_safe_float(info.get('v')))
         amount = price * volume * 1000 if price and volume else 0
+
+        # 組合日期時間
+        time_str = info.get('t', '')
+        date_str = info.get('d', '')  # API 有時會返回日期
+        if date_str and time_str:
+            timestamp = f"{date_str} {time_str}"
+        elif time_str:
+            # 如果沒有日期，使用當前日期
+            today = datetime.now().strftime('%Y/%m/%d')
+            timestamp = f"{today} {time_str}"
+        else:
+            timestamp = datetime.now().strftime('%Y/%m/%d %H:%M:%S')
 
         return StockQuote(
             symbol=symbol,
@@ -222,7 +236,7 @@ async def _fetch_twse_quote(symbol: str) -> Optional[StockQuote]:
             limit_up=_safe_float(info.get('u')),
             limit_down=_safe_float(info.get('w')),
             amplitude=round(amplitude, 2),
-            timestamp=info.get('t', ''),
+            timestamp=timestamp,
             market='tse'
         )
 
@@ -234,6 +248,8 @@ async def _fetch_twse_quote(symbol: str) -> Optional[StockQuote]:
 async def _fetch_tpex_quote(symbol: str) -> Optional[StockQuote]:
     """從 TPEX 取得上櫃股票報價"""
     try:
+        from datetime import datetime
+
         url = f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=otc_{symbol}.tw"
 
         data = await _fetch_with_retry(url)
@@ -257,6 +273,17 @@ async def _fetch_tpex_quote(symbol: str) -> Optional[StockQuote]:
         volume = int(_safe_float(info.get('v')))
         amount = price * volume * 1000 if price and volume else 0
 
+        # 組合日期時間
+        time_str = info.get('t', '')
+        date_str = info.get('d', '')
+        if date_str and time_str:
+            timestamp = f"{date_str} {time_str}"
+        elif time_str:
+            today = datetime.now().strftime('%Y/%m/%d')
+            timestamp = f"{today} {time_str}"
+        else:
+            timestamp = datetime.now().strftime('%Y/%m/%d %H:%M:%S')
+
         return StockQuote(
             symbol=symbol,
             name=info.get('n', STOCK_NAMES.get(symbol, symbol)),
@@ -275,7 +302,7 @@ async def _fetch_tpex_quote(symbol: str) -> Optional[StockQuote]:
             limit_up=_safe_float(info.get('u')),
             limit_down=_safe_float(info.get('w')),
             amplitude=round(amplitude, 2),
-            timestamp=info.get('t', ''),
+            timestamp=timestamp,
             market='otc'
         )
 
