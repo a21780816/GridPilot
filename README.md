@@ -33,16 +33,25 @@ flowchart TB
     end
 
     subgraph Interface["介面層"]
-        TB[TelegramBot<br/>指令處理]
-        FA[FastAPI<br/>REST API]
+        subgraph TelegramHandlers["Telegram Bot"]
+            TB[TelegramBot<br/>主程式]
+            TH[TriggerHandlers<br/>條件單處理]
+            PH[PortfolioHandlers<br/>持股查詢]
+        end
+        subgraph APIRoutes["REST API"]
+            FA[FastAPI<br/>主程式]
+            TR[TriggerRoutes<br/>條件單/股票]
+            PR[PortfolioRoutes<br/>持股查詢]
+        end
         TN[TelegramNotifier<br/>通知推送]
     end
 
     subgraph CoreLayer["核心層"]
         TOM[TriggerOrderManager<br/>條件單管理]
         PM[PriceMonitor<br/>價格監控]
-        BM[BotManager<br/>機器人管理]
+        SIS[StockInfoService<br/>股票資訊服務]
         UM[UserManager<br/>用戶管理]
+        BM[BotManager<br/>機器人管理]
         GTB[GridTradingBot<br/>網格交易引擎]
     end
 
@@ -52,29 +61,43 @@ flowchart TB
     end
 
     subgraph External["外部服務"]
-        TRADE[交易 API]
-        MARKET[行情 API]
+        TWSE[TWSE/TPEX API<br/>公開資訊]
+        TRADE[券商交易 API]
+        MARKET[券商行情 API]
     end
 
     subgraph Storage["資料儲存"]
-        JSON[JSON Storage<br/>條件單/用戶資料]
+        JSON[JSON/INI Storage<br/>用戶/條件單/券商設定]
     end
 
     TG <--> TB
+    TB <--> TH
+    TB <--> PH
     API <--> FA
-    TB <--> TOM
-    FA <--> TOM
+    FA <--> TR
+    FA <--> PR
+
+    TH <--> TOM
+    TH <--> SIS
+    PH <--> BA
+    TR <--> TOM
+    TR <--> SIS
+    PR <--> BA
+
     TB <--> UM
     FA <--> UM
     TOM <--> PM
-    PM <--> BA
+    PM <--> SIS
     TOM --> TN
     TN --> TG
+
+    SIS <--> TWSE
     BM <--> GTB
     GTB <--> BA
     BA <--> ESUN
     ESUN <--> TRADE
     ESUN <--> MARKET
+
     TOM <--> JSON
     UM <--> JSON
 ```
@@ -85,17 +108,103 @@ flowchart TB
 |------|------|------|
 | **使用者介面** | Telegram / REST API | 用戶透過 Telegram 或 API 操作 |
 | **介面層** | TelegramBot | 處理用戶指令、互動式設定流程 |
+| | TriggerHandlers | 條件單相關指令處理 |
+| | PortfolioHandlers | 持股查詢相關指令處理 |
 | | FastAPI | 提供 REST API 端點 |
+| | TriggerRoutes | 條件單與股票查詢 API |
+| | PortfolioRoutes | 持股、餘額、委託、成交查詢 API |
 | | TelegramNotifier | 推送交易通知、狀態報告 |
 | **核心層** | TriggerOrderManager | 條件單 CRUD 與執行管理 |
 | | PriceMonitor | 每 30 秒監控股價並觸發條件單 |
-| | BotManager | 管理多個網格機器人的生命週期 |
+| | StockInfoService | 股票即時報價、基本面、法人買賣超查詢 |
 | | UserManager | 管理用戶設定、券商配置、PIN 碼、API Key |
+| | BotManager | 管理多個網格機器人的生命週期 |
 | | GridTradingBot | 網格交易核心邏輯 |
 | **券商層** | Broker Adapter | 統一的券商介面抽象 |
 | | 玉山證券 SDK | 實際的交易與行情 API 實作 |
+| **外部服務** | TWSE/TPEX API | 證交所/櫃買中心公開資訊 |
+| | 券商 API | 交易下單與帳戶查詢 |
 
-### 交易流程
+### 主要流程
+
+#### 股票報價查詢
+
+```mermaid
+sequenceDiagram
+    participant U as 使用者
+    participant T as Telegram Bot
+    participant S as StockInfoService
+    participant E as TWSE/TPEX API
+
+    U->>T: /quote 2330
+    T->>S: 查詢股票報價
+    S->>E: 請求即時資料
+    E-->>S: 返回報價資料
+    S-->>T: 股價、漲跌、成交量
+    T->>U: 顯示報價 (含詳細/簡易切換按鈕)
+
+    opt 點擊詳細資訊
+        U->>T: 點擊「詳細資訊」
+        T->>S: 查詢基本面 + 法人
+        S->>E: 請求詳細資料
+        E-->>S: 返回資料
+        S-->>T: 本益比、殖利率、法人買賣超
+        T->>U: 顯示詳細資訊
+    end
+```
+
+#### 持股查詢
+
+```mermaid
+sequenceDiagram
+    participant U as 使用者
+    participant T as Telegram Bot
+    participant P as PortfolioHandlers
+    participant B as 券商 API
+
+    U->>T: 點擊「我的持股」
+    T->>P: 查詢持股
+    P->>B: 取得持倉 + 餘額
+    B-->>P: 返回資料
+    P-->>T: 持股明細、市值、損益
+    T->>U: 顯示投資組合總覽
+
+    opt 查看明細
+        U->>T: 點擊「持股明細」/「今日委託」
+        T->>P: 查詢對應資料
+        P->>B: 請求資料
+        B-->>P: 返回資料
+        T->>U: 顯示明細
+    end
+```
+
+#### 條件單觸發
+
+```mermaid
+sequenceDiagram
+    participant U as 使用者
+    participant T as Telegram Bot
+    participant TOM as TriggerOrderManager
+    participant PM as PriceMonitor
+    participant B as 券商 API
+
+    U->>T: /trigger (設定條件單)
+    T->>TOM: 建立條件單
+
+    loop 每 30 秒
+        PM->>PM: 查詢股價
+        PM->>TOM: 檢查觸發條件
+
+        alt 價格達到條件
+            TOM->>B: 送出委託單
+            B-->>TOM: 委託結果
+            TOM->>T: 發送通知
+            T->>U: 推送觸發通知
+        end
+    end
+```
+
+#### 網格交易
 
 ```mermaid
 sequenceDiagram
@@ -244,7 +353,7 @@ BrokerId = 6460
 | `/menu` | 顯示主選單 |
 | `/help` | 顯示說明 |
 | `/cancel` | 取消目前操作 |
-| `/quote [代號]` | 查詢即時股價 |
+| `/quote [代號]` | 查詢即時股價（支援詳細/簡易模式切換） |
 
 ### 券商管理
 
@@ -252,6 +361,17 @@ BrokerId = 6460
 |------|------|
 | `/broker` | 管理券商設定（新增/重新設定） |
 | `/brokers` | 查看已設定的券商 |
+
+### 持股查詢
+
+| 指令 | 說明 |
+|------|------|
+| `/holdings` | 查詢持股明細 |
+| `/balance` | 查詢帳戶餘額 |
+| `/orders` | 查詢今日委託 |
+| `/trades` | 查詢今日成交 |
+
+> 也可透過主選單「我的持股」按鈕進入投資組合總覽
 
 ### 條件單
 
@@ -293,6 +413,8 @@ API Key 可透過 Telegram Bot 的 `/apikey` 指令取得。
 
 ### API 端點
 
+#### 條件單
+
 | Method | Endpoint | 說明 |
 |--------|----------|------|
 | `POST` | `/api/v1/triggers` | 建立條件單 |
@@ -300,7 +422,27 @@ API Key 可透過 Telegram Bot 的 `/apikey` 指令取得。
 | `GET` | `/api/v1/triggers/{id}` | 取得條件單詳情 |
 | `PUT` | `/api/v1/triggers/{id}` | 更新條件單 |
 | `DELETE` | `/api/v1/triggers/{id}` | 刪除條件單 |
-| `GET` | `/api/v1/triggers/stocks/{symbol}/quote` | 查詢即時股價 |
+
+#### 股票資訊
+
+| Method | Endpoint | 說明 |
+|--------|----------|------|
+| `GET` | `/api/v1/stocks/{symbol}/quote` | 查詢即時股價 |
+| `GET` | `/api/v1/stocks/{symbol}/detail` | 查詢詳細資訊（含基本面、法人） |
+| `GET` | `/api/v1/stocks/{symbol}/fundamental` | 查詢基本面資訊 |
+| `GET` | `/api/v1/stocks/{symbol}/institutional` | 查詢法人買賣超 |
+
+#### 持股查詢
+
+| Method | Endpoint | 說明 |
+|--------|----------|------|
+| `GET` | `/api/v1/portfolio/summary` | 投資組合摘要 |
+| `GET` | `/api/v1/portfolio/positions` | 持倉列表 |
+| `GET` | `/api/v1/portfolio/positions/{symbol}` | 單一持倉詳情 |
+| `GET` | `/api/v1/portfolio/balance` | 帳戶餘額 |
+| `GET` | `/api/v1/portfolio/orders` | 今日委託 |
+| `GET` | `/api/v1/portfolio/transactions` | 成交紀錄 |
+| `GET` | `/api/v1/portfolio/settlements` | 交割資訊 |
 
 ### 建立條件單範例
 
@@ -346,7 +488,8 @@ GridPilot/
 │   │   │   └── responses.py      # 響應模型
 │   │   └── routes/               # 路由
 │   │       ├── health.py         # 健康檢查
-│   │       ├── trigger_orders.py # 條件單 API
+│   │       ├── trigger_orders.py # 條件單 + 股票查詢 API
+│   │       ├── portfolio.py      # 持股查詢 API
 │   │       └── users.py          # 用戶 API
 │   ├── brokers/                  # 券商介面
 │   │   ├── base.py               # 抽象基底類別
@@ -354,10 +497,10 @@ GridPilot/
 │   ├── core/                     # 核心邏輯
 │   │   ├── trigger_order_manager.py  # 條件單管理器
 │   │   ├── price_monitor.py      # 價格監控服務
+│   │   ├── stock_info.py         # 股票資訊服務（報價/基本面/法人）
 │   │   ├── grid_trading_bot.py   # 網格交易機器人
 │   │   ├── bot_manager.py        # 機器人管理器
-│   │   ├── user_manager.py       # 用戶管理
-│   │   └── stock_info.py         # 台股即時報價查詢
+│   │   └── user_manager.py       # 用戶管理
 │   ├── models/                   # 資料模型
 │   │   ├── enums.py              # 列舉定義
 │   │   ├── trigger_order.py      # 條件單模型
@@ -369,7 +512,8 @@ GridPilot/
 │       ├── telegram_bot.py       # Telegram Bot 主程式
 │       ├── telegram_notifier.py  # 通知模組
 │       └── handlers/             # 指令處理器
-│           └── trigger_handlers.py  # 條件單指令
+│           ├── trigger_handlers.py   # 條件單指令
+│           └── portfolio_handlers.py # 持股查詢指令
 ├── scripts/                      # 執行腳本
 │   ├── run_telegram_bot.py       # 啟動 Telegram Bot
 │   ├── run_api.py                # 啟動 REST API
