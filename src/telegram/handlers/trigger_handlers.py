@@ -60,6 +60,17 @@ class TriggerHandlers:
             [InlineKeyboardButton("↩️ 返回主選單", callback_data="menu_main")]
         ])
 
+    def _format_condition_display(self, condition: str) -> str:
+        """將條件符號轉換為 HTML 安全的顯示格式"""
+        condition_map = {
+            '>=': '≥ (漲到)',
+            '<=': '≤ (跌到)',
+            '==': '= (等於)',
+            '>': '> (大於)',
+            '<': '< (小於)',
+        }
+        return condition_map.get(condition, condition)
+
     # ========== 指令處理 ==========
 
     async def trigger_command(self, update: Update,
@@ -152,9 +163,10 @@ class TriggerHandlers:
             order_type = "市" if t.order_type.value == "market" else "限"
             trade_type = trade_type_map.get(t.trade_type.value, '現股')
 
+            condition_display = self._format_condition_display(t.condition.value)
             msg += (
                 f"{icon} <code>{t.symbol}</code> | "
-                f"價格 {t.condition.value} {t.trigger_price}\n"
+                f"價格 {condition_display} {t.trigger_price}\n"
                 f"   → {trade_type} {order_type}價{action} {t.quantity}張 | "
                 f"ID: <code>{t.id[:8]}</code>\n"
             )
@@ -391,10 +403,11 @@ class TriggerHandlers:
             action = "買" if t.order_action.value == "buy" else "賣"
             order_type = "市" if t.order_type.value == "market" else "限"
             trade_type = trade_type_map.get(t.trade_type.value, '現股')
+            condition_display = self._format_condition_display(t.condition.value)
 
             msg += (
                 f"{icon} <code>{t.symbol}</code> | "
-                f"價格 {t.condition.value} {t.trigger_price}\n"
+                f"價格 {condition_display} {t.trigger_price}\n"
                 f"   → {trade_type} {order_type}價{action} {t.quantity}張 | "
                 f"ID: <code>{t.id[:8]}</code>\n"
             )
@@ -710,11 +723,12 @@ class TriggerHandlers:
             }
             trade_type = trade_type_map.get(temp.get('trade_type', 'cash'), '現股')
 
+            condition_display = self._format_condition_display(temp.get('condition', ''))
             msg = f"""{price_header}
 <b>請確認條件單設定：</b>
 
 股票: <code>{temp.get('symbol')}</code> {symbol_name}
-觸發條件: 價格 {temp.get('condition')} {temp.get('trigger_price')}
+觸發條件: 價格 {condition_display} {temp.get('trigger_price')}
 交易類型: {trade_type}
 動作: {action} {qty} 張
 訂單類型: {order_type}
@@ -863,11 +877,12 @@ class TriggerHandlers:
         }
         trade_type = trade_type_map.get(temp.get('trade_type', 'cash'), '現股')
 
+        condition_display = self._format_condition_display(trigger.condition.value)
         await update.message.reply_text(
             f"<b>條件單已建立</b>\n\n"
             f"ID: <code>{trigger.id[:8]}</code>\n"
             f"股票: {trigger.symbol}\n"
-            f"條件: 價格 {trigger.condition.value} {trigger.trigger_price}\n"
+            f"條件: 價格 {condition_display} {trigger.trigger_price}\n"
             f"交易類型: {trade_type}\n"
             f"動作: {order_type}{action} {trigger.quantity}張",
             parse_mode='HTML',
@@ -903,7 +918,7 @@ class TriggerHandlers:
 
             await query.edit_message_text(
                 f"{price_header}"
-                f"觸發條件: 價格 {condition}\n\n"
+                f"觸發條件: 價格 {self._format_condition_display(condition)}\n\n"
                 "請輸入觸發價格：",
                 parse_mode='HTML'
             )
